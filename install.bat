@@ -1,0 +1,1 @@
+pyinstaller Product_Management_System.spec
