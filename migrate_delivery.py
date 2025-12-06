@@ -1,155 +1,184 @@
-# migrate_delivery_data.py
-# 구 방식(deliveries.order_id/purchase_id)에서 신규 방식(링크 테이블)으로 데이터 마이그레이션
-
-import sys
+# migrate_delivery_items.py
+import sqlite3
 import os
+from contextlib import contextmanager
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# --- 설정 ---
+# db.py 파일이 app 폴더 안에 있다고 가정합니다.
+# 이 스크립트는 app 폴더의 부모 폴더(프로젝트 루트)에서 실행해야 합니다.
+DB_PATH = os.path.join('app', 'db', 'production.db')
 
-from app.db import get_conn
+
+# ---
+
+@contextmanager
+def get_conn():
+    """DB 연결 컨텍스트 매니저"""
+    if not os.path.exists(DB_PATH):
+        print(f"오류: 데이터베이스 파일을 찾을 수 없습니다. 경로: {DB_PATH}")
+        print("이 스크립트를 프로젝트 루트 폴더에서 실행했는지 확인하세요.")
+        raise FileNotFoundError(f"Database not found at {DB_PATH}")
+
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        yield conn
+    except sqlite3.Error as e:
+        print(f"데이터베이스 연결 오류: {e}")
+    finally:
+        if conn:
+            conn.close()
 
 
-def migrate_delivery_data():
-    """구 방식의 납품 데이터를 신규 방식으로 마이그레이션"""
-
-    print("=" * 80)
-    print("납품 데이터 마이그레이션 시작")
-    print("=" * 80)
-    print("구 방식: deliveries.order_id, deliveries.purchase_id")
-    print("신규 방식: delivery_order_links, delivery_purchase_links")
-    print("=" * 80)
-
-    conn = get_conn()
+def find_linked_order_id(conn, delivery_id, item_code):
+    """
+    납품 ID와 품목 코드를 기반으로 연결된 주문 ID를 찾습니다.
+    (delivery_order_links -> order_items)
+    """
     cur = conn.cursor()
+    # 1. 이 납품에 연결된 모든 주문 ID를 예전 링크 테이블에서 찾음
+    cur.execute("SELECT order_id FROM delivery_order_links WHERE delivery_id = ?", (delivery_id,))
+    linked_order_ids = [row['order_id'] for row in cur.fetchall()]
+
+    if not linked_order_ids:
+        return None
+
+    # 2. 그 주문들 중에서 이 품목 코드를 포함하는 주문을 찾음
+    placeholders = ', '.join('?' for _ in linked_order_ids)
+    cur.execute(f"""
+        SELECT order_id 
+        FROM order_items 
+        WHERE order_id IN ({placeholders}) AND item_code = ?
+        LIMIT 1
+    """, (*linked_order_ids, item_code))
+
+    result = cur.fetchone()
+    return result['order_id'] if result else None
+
+
+def find_linked_purchase_id(conn, delivery_id, item_code):
+    """
+    납품 ID와 품목 코드를 기반으로 연결된 발주 ID를 찾습니다.
+    (delivery_purchase_links -> purchase_items)
+    """
+    cur = conn.cursor()
+    # 1. 이 납품에 연결된 모든 발주 ID를 예전 링크 테이블에서 찾음
+    cur.execute("SELECT purchase_id FROM delivery_purchase_links WHERE delivery_id = ?", (delivery_id,))
+    linked_purchase_ids = [row['purchase_id'] for row in cur.fetchall()]
+
+    if not linked_purchase_ids:
+        return None
+
+    # 2. 그 발주들 중에서 이 품목 코드를 포함하는 발주를 찾음
+    placeholders = ', '.join('?' for _ in linked_purchase_ids)
+    cur.execute(f"""
+        SELECT purchase_id 
+        FROM purchase_items 
+        WHERE purchase_id IN ({placeholders}) AND item_code = ?
+        LIMIT 1
+    """, (*linked_purchase_ids, item_code))
+
+    result = cur.fetchone()
+    return result['purchase_id'] if result else None
+
+
+def run_migration():
+    """메인 마이그레이션 실행 함수"""
+    print("데이터 복원 스크립트를 시작합니다...")
+    print(f"데이터베이스 경로: {DB_PATH}\n")
+
+    updated_order_count = 0
+    updated_purchase_count = 0
+    failed_items = []
 
     try:
-        # 1. 마이그레이션이 필요한 납품 찾기
-        cur.execute("""
-            SELECT id, invoice_no, order_id, purchase_id
-            FROM deliveries
-            WHERE order_id IS NOT NULL OR purchase_id IS NOT NULL
-            ORDER BY id
-        """)
+        with get_conn() as conn:
+            cur = conn.cursor()
 
-        deliveries_to_migrate = cur.fetchall()
-
-        if not deliveries_to_migrate:
-            print("\n✅ 마이그레이션이 필요한 데이터가 없습니다!")
-            conn.close()
-            return
-
-        print(f"\n📋 마이그레이션 대상: {len(deliveries_to_migrate)}개 납품\n")
-
-        migrated_count = 0
-
-        for delivery in deliveries_to_migrate:
-            delivery_id, invoice_no, old_order_id, old_purchase_id = delivery
-
-            print(f"[{delivery_id}] {invoice_no}")
-            print(f"  기존: order_id={old_order_id}, purchase_id={old_purchase_id}")
-
-            # 2. delivery_order_links에 이미 데이터가 있는지 확인
-            if old_order_id:
-                cur.execute("""
-                    SELECT COUNT(*) FROM delivery_order_links 
-                    WHERE delivery_id = ? AND order_id = ?
-                """, (delivery_id, old_order_id))
-
-                order_link_exists = cur.fetchone()[0] > 0
-
-                if not order_link_exists:
-                    # 링크가 없으면 생성
-                    cur.execute("""
-                        INSERT INTO delivery_order_links (delivery_id, order_id)
-                        VALUES (?, ?)
-                    """, (delivery_id, old_order_id))
-                    print(f"  ✅ order_id={old_order_id}를 delivery_order_links에 추가")
-                else:
-                    print(f"  ℹ️  order_id={old_order_id}는 이미 delivery_order_links에 있음")
-
-            # 3. delivery_purchase_links에 이미 데이터가 있는지 확인
-            if old_purchase_id:
-                cur.execute("""
-                    SELECT COUNT(*) FROM delivery_purchase_links 
-                    WHERE delivery_id = ? AND purchase_id = ?
-                """, (delivery_id, old_purchase_id))
-
-                purchase_link_exists = cur.fetchone()[0] > 0
-
-                if not purchase_link_exists:
-                    # 링크가 없으면 생성
-                    cur.execute("""
-                        INSERT INTO delivery_purchase_links (delivery_id, purchase_id)
-                        VALUES (?, ?)
-                    """, (delivery_id, old_purchase_id))
-                    print(f"  ✅ purchase_id={old_purchase_id}를 delivery_purchase_links에 추가")
-                else:
-                    print(f"  ℹ️  purchase_id={old_purchase_id}는 이미 delivery_purchase_links에 있음")
-
-            # 4. 구 컬럼을 NULL로 설정
+            # 1. 대상 항목 조회 (order_id 또는 purchase_id가 NULL인 항목)
             cur.execute("""
-                UPDATE deliveries 
-                SET order_id = NULL, purchase_id = NULL
-                WHERE id = ?
-            """, (delivery_id,))
-            print(f"  ✅ deliveries.order_id, purchase_id를 NULL로 설정\n")
+                SELECT id, delivery_id, item_code, serial_no, order_id, purchase_id 
+                FROM delivery_items 
+                WHERE order_id IS NULL OR purchase_id IS NULL
+            """)
+            items_to_fix = cur.fetchall()
 
-            migrated_count += 1
+            if not items_to_fix:
+                print("👍 모든 납품 품목 데이터가 이미 올바른 형식을 가지고 있습니다. 복원할 데이터가 없습니다.")
+                return
 
-        # 커밋
-        conn.commit()
+            print(f"총 {len(items_to_fix)}개의 납품 품목에서 order_id 또는 purchase_id가 비어있습니다. 복원을 시도합니다...")
 
-        print("=" * 80)
-        print(f"✅ 마이그레이션 완료: {migrated_count}개 납품 처리됨")
-        print("=" * 80)
+            update_cursor = conn.cursor()
 
-        # 5. 마이그레이션 결과 확인
-        print("\n검증 중...")
+            for item in items_to_fix:
+                item_id = item['id']
+                delivery_id = item['delivery_id']
+                item_code = item['item_code']
 
-        cur.execute("""
-            SELECT COUNT(*) FROM deliveries 
-            WHERE order_id IS NOT NULL OR purchase_id IS NOT NULL
-        """)
-        remaining = cur.fetchone()[0]
+                new_order_id = item['order_id']
+                new_purchase_id = item['purchase_id']
 
-        if remaining > 0:
-            print(f"⚠️  경고: 아직 {remaining}개의 납품이 구 방식을 사용 중입니다!")
-        else:
-            print("✅ 모든 납품이 신규 방식으로 마이그레이션되었습니다!")
+                is_updated = False
 
-        # 링크 테이블 통계
-        cur.execute("SELECT COUNT(*) FROM delivery_order_links")
-        order_links_count = cur.fetchone()[0]
+                # 2. Order ID 복원 시도
+                if item['order_id'] is None:
+                    found_order_id = find_linked_order_id(conn, delivery_id, item_code)
+                    if found_order_id:
+                        new_order_id = found_order_id
+                        update_cursor.execute("UPDATE delivery_items SET order_id = ? WHERE id = ?",
+                                              (new_order_id, item_id))
+                        updated_order_count += 1
+                        is_updated = True
 
-        cur.execute("SELECT COUNT(*) FROM delivery_purchase_links")
-        purchase_links_count = cur.fetchone()[0]
+                # 3. Purchase ID 복원 시도
+                if item['purchase_id'] is None:
+                    found_purchase_id = find_linked_purchase_id(conn, delivery_id, item_code)
+                    if found_purchase_id:
+                        new_purchase_id = found_purchase_id
+                        update_cursor.execute("UPDATE delivery_items SET purchase_id = ? WHERE id = ?",
+                                              (new_purchase_id, item_id))
+                        updated_purchase_count += 1
+                        is_updated = True
 
-        print(f"\n📊 최종 통계:")
-        print(f"  - delivery_order_links: {order_links_count}개 연결")
-        print(f"  - delivery_purchase_links: {purchase_links_count}개 연결")
+                if is_updated:
+                    print(
+                        f"  [성공] 품목 ID: {item_id} (S/N: {item['serial_no']}) -> (Order: {new_order_id}, Purchase: {new_purchase_id})")
+                else:
+                    failed_items.append(item)
+                    print(f"  [실패] 품목 ID: {item_id} (S/N: {item['serial_no']}) -> 연결된 주문/발주를 찾을 수 없습니다.")
 
-    except Exception as e:
-        conn.rollback()
-        print(f"\n❌ 오류 발생: {e}")
-        import traceback
-        traceback.print_exc()
+            # 4. 변경 사항 최종 저장
+            conn.commit()
 
-    finally:
-        conn.close()
+            print("\n--- 복원 완료 ---")
+            print(f"✅ Order ID 업데이트: {updated_order_count}건")
+            print(f"✅ Purchase ID 업데이트: {updated_purchase_count}건")
 
-    print("\n" + "=" * 80)
-    print("마이그레이션 완료!")
-    print("=" * 80)
+            if failed_items:
+                print(f"⚠️ 총 {len(failed_items)}건의 품목 ID는 복원에 실패했습니다 (데이터 불일치).")
+
+    except sqlite3.Error as e:
+        print(f"\n[치명적 오류] 마이그레이션 중단: {e}")
+        print("데이터베이스가 변경되지 않았습니다.")
+    except FileNotFoundError:
+        # get_conn에서 이미 메시지를 출력했으므로 여기선 종료만 함
+        pass
 
 
 if __name__ == "__main__":
-    # 사용자에게 확인
-    print("\n⚠️  경고: 이 작업은 데이터베이스를 수정합니다!")
-    print("계속하려면 'yes'를 입력하세요: ", end="")
+    # 실행 전 중요 안내
+    print("=" * 60)
+    print(" KOBATECH DB 데이터 복원 스크립트")
+    print("=" * 60)
+    print("이 스크립트는 'delivery_items' 테이블의 비어있는(NULL) 'order_id'")
+    print("와 'purchase_id' 컬럼을 예전 연결 데이터를 기반으로 채웁니다.")
+    print("\n[중요] 실행 전 'production.db' 파일을 반드시 백업하세요!\n")
 
-    response = input().strip().lower()
+    answer = input("계속 진행하시겠습니까? (y/n): ")
 
-    if response == 'yes':
-        migrate_delivery_data()
+    if answer.lower() == 'y':
+        run_migration()
     else:
-        print("\n취소되었습니다.")
+        print("작업을 취소했습니다.")

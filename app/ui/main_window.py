@@ -2,17 +2,30 @@
 from PySide6 import QtGui
 from PySide6 import QtWidgets, QtCore
 from PySide6.QtWidgets import QHeaderView, QMenu, QSplitter, QTabWidget
-from PySide6.QtCore import QLocale, Qt, QSettings
+from PySide6.QtCore import QLocale, Qt, QSettings, QSignalBlocker
+from PySide6.QtGui import QAction
 from datetime import datetime
+
+from .color_settings_dialog import ColorSettingsDialog
+# ✅ query_all 함수 임포트 추가
 from ..db import (get_conn, get_due_change_history, add_due_change_record, update_order_final_due_date,
-                  add_or_update_product_master, search_product_master)
+                  add_or_update_product_master, search_product_master, is_purchase_completed,
+                  query_all)
 from .purchase_widget import PurchaseWidget
 from .delivery_widget import DeliveryWidget
 from .product_widget import ProductWidget
 from .product_master_widget import ProductMasterWidget
 from .autocomplete_widgets import ProductOrderDialog
+from .schedule_dialog import ScheduleDialog
 from .money_lineedit import MoneyLineEdit
-from PySide6.QtGui import QAction  # ✅ 이 줄 추가
+from .repair_widget import RepairWidget
+from .schedule_calendar_widget import ScheduleCalendarWidget
+from .bom_widget import BomWidget
+from .utils import parse_due_text, apply_table_resize_policy, resource_path, get_icon_path
+from .filter_settings_dialog import FilterSettingsDialog
+from .analysis_widget import AnalysisWidget
+from .profit_widget import ProfitWidget
+from .outlook_sysnc import OutlookSyncWorker
 
 
 # ── 표시용 포맷 ──────────────────────────────────────────────────────────────
@@ -25,47 +38,46 @@ def format_money(val: float | None) -> str:
         return str(val)
 
 
-def parse_due_text(text: str) -> str | None:
-    s = (text or "").strip()
-    if not s:
-        return None
-    fmts = [
-        "%Y-%m-%d", "%Y/%m/%d",
-        "%y-%m-%d", "%y/%m/%d",
-        "%d-%b-%y", "%d-%b-%Y",
-        "%d/%m/%Y", "%m/%d/%Y",
-    ]
-    for f in fmts:
-        try:
-            dt = datetime.strptime(s, f)
-            if dt.year < 2000:
-                dt = dt.replace(year=dt.year + 2000)
-            return dt.strftime("%Y-%m-%d")
-        except Exception:
-            continue
-    return None
-
-
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("KOBATECH 생산 관리 시스템")
-        self.resize(1600, 900)
-        self.only_future = False
-        self.show_all_billed = False
-        self.show_all_inventory = False
+        # self.resize(1600, 900)
 
         # 설정 저장을 위한 QSettings 초기화
         self.settings = QSettings("KOBATECH", "ProductionManagement")
 
-        # ✅ 윈도우 아이콘 설정
-        from pathlib import Path
-        icon_path = Path(__file__).parent / "koba_erp_final.ico"
-
-        if icon_path.exists():
-            self.setWindowIcon(QtGui.QIcon(str(icon_path)))
+        # ✅ [저장된 창 크기가 없으면 기본값(1600x900) 사용
+        if self.settings.contains("MainWindow/geometry"):
+            try:
+                self.restoreGeometry(self.settings.value("MainWindow/geometry"))
+            except Exception as e:
+                print(f"윈도우 크기 복원 실패: {e}")
         else:
-            print(f"⚠️ 아이콘 파일을 찾을 수 없습니다: {icon_path}")
+            self.resize(1600, 900)
+
+        # ✅ 윈도우 상태(툴바 위치 등)도 복원
+        if self.settings.contains("MainWindow/state"):
+            self.restoreState(self.settings.value("MainWindow/state"))
+
+        self.only_future = False
+        self.show_all_billed = True
+        self.show_all_inventory = False
+
+        # ✅ 상호작용 선택 시 무한 루프 방지용 플래그
+        self.is_selecting = False
+
+        # ✅ 저장된 필터 설정 불러오기
+        self.show_all_billed = self.settings.value("filters/orders_show_all", False, type=bool)
+        self.show_all_inventory = self.settings.value("filters/inventory_show_all", False, type=bool)
+
+        # ✅ 활성화된 주문 다이얼로그 추적용 리스트 (모달리스 지원)
+        self.active_order_dialogs = []
+
+        # ✅ 윈도우 아이콘 설정
+        icon_path = get_icon_path()
+        if icon_path:
+            self.setWindowIcon(QtGui.QIcon(icon_path))
 
         # ✅ 로고 툴바를 먼저 생성
         self.setup_logo_toolbar()
@@ -82,22 +94,107 @@ class MainWindow(QtWidgets.QMainWindow):
         self.product_master_widget = ProductMasterWidget(settings=self.settings)
         self.main_tabs.addTab(self.product_master_widget, "품목 관리")
 
+        # ✅ [추가] 1. BOM 관리 위젯 생성
+        self.bom_widget = BomWidget(settings=self.settings)
+        # ✅ [추가] 2. 메인 탭에 "BOM 관리" 탭 추가
+        self.main_tabs.addTab(self.bom_widget, "BOM 관리")
+
         self.product_production_widget = ProductWidget(settings=self.settings)
         self.main_tabs.addTab(self.product_production_widget, "제품 생산")
 
+        # ✅ [추가] 재고 현황 테이블의 정렬 상태 불러오기
+        self.current_inventory_sort_column = self.settings.value("inventory_table/sort_column", 0, type=int)
+        sort_order_val = self.settings.value("inventory_table/sort_order", Qt.DescendingOrder)
+        self.current_inventory_sort_order = Qt.SortOrder(sort_order_val)
+
         self.inventory_widget = self.create_inventory_widget()
         self.main_tabs.addTab(self.inventory_widget, "재고 현황")
+
+        self.repair_widget = RepairWidget(settings=self.settings)
+        self.main_tabs.addTab(self.repair_widget, "수리 관리")
+
+        # ✅ [추가] 1. 납품 달력 위젯 생성
+        self.schedule_calendar_widget = ScheduleCalendarWidget(settings=self.settings)
+        # ✅ [추가] 2. 메인 탭에 "납품 달력" 탭 추가
+        self.main_tabs.addTab(self.schedule_calendar_widget, "납품 달력")
+
+        # ✅ [추가] 품질 분석 탭 추가
+        self.analysis_widget = AnalysisWidget()
+        self.main_tabs.addTab(self.analysis_widget, "품질 분석")
+
+        # ✅ [추가] 수익 분석 탭
+        self.profit_widget = ProfitWidget()
+        self.main_tabs.addTab(self.profit_widget, "수익 분석")
 
         # 🆕 탭 전환 시 자동 새로고침 연결
         self.main_tabs.currentChanged.connect(self.on_tab_changed)
 
         self.setCentralWidget(self.main_tabs)
+
+        # ✅ 선택된 아이템의 텍스트 색상을 흰색으로 변경하는 스타일시트 추가
+        # QTableWidget, QListWidget 등에서 선택된 아이템의 전경색을 흰색으로 설정
+        self.setStyleSheet("""
+                            /* 1. 기본 스타일 정의 (글자색, 배경색) */
+                            QTableWidget::item,
+                            QListWidget::item,
+                            QTreeView::item {
+                                outline: none; /* 기본적으로 모든 아이템의 아웃라인 제거 */
+                            }
+                            QTableView {
+                                outline: 0; /* 테이블 뷰 자체의 포커스 아웃라인 제거 */
+                            }
+
+                            /* 2. '선택된' 아이템의 스타일 */
+                            QTableWidget::item:selected,
+                            QListWidget::item:selected,
+                            QTreeView::item:selected {
+                                background-color: #0078d4; 
+                                color: white;             
+                                border: none;
+                            }
+
+                            /* 3. 포커스를 얻었을 때의 테두리 강제 제거 (최대 우선순위) */
+                            QTableWidget::item:focus,
+                            QListWidget::item:focus,
+                            QTreeView::item:focus,
+                            QTableWidget::item:selected:focus { /* 선택 + 포커스 상태 */
+                                border: none;
+                                outline: none; 
+                            }
+
+                            /* 4. 콤보박스 드롭다운 리스트의 선택된 아이템 스타일 */
+                            QComboBox QAbstractItemView::item:selected {
+                                background-color: #0078d4; 
+                                color: white;             
+                            }
+
+                            /* 5. 마우스 오버 시 스타일 (테두리 제거) */
+                            QTableWidget::item:hover,
+                            QListWidget::item:hover,
+                            QTreeView::item:hover {
+                                border: none;
+                                outline: none;
+                            }
+                        """)
+
         self.statusBar().showMessage("준비됨")
 
-        self.current_sort_column = 7
-        self.current_sort_order = Qt.AscendingOrder
+        # ✅ 저장된 정렬 상태 불러오기 (기본값: 7-최초납기, 0-오름차순)
+        self.current_sort_column = self.settings.value("orders_table/sort_column", 7, type=int)
+        # [수정] type=int를 제거하여 QSettings가 Enum 객체를 직접 읽도록 함
+        sort_order_val = self.settings.value("orders_table/sort_order", Qt.AscendingOrder)
+        self.current_sort_order = Qt.SortOrder(sort_order_val)
 
         self.load_due_list(only_future=False)
+        self.refresh_order_purchase_delivery()
+
+        # ✅ [핵심] 3개 테이블의 *선택 집합 변경* 시그널을 핸들러에 연결
+        self.table.itemSelectionChanged.connect(self.on_order_selected)
+        if hasattr(self, 'purchase_widget') and self.purchase_widget:
+            self.purchase_widget.table.itemSelectionChanged.connect(self.on_purchase_selected)
+        if hasattr(self, 'delivery_widget') and self.delivery_widget:
+            self.delivery_widget.table.itemSelectionChanged.connect(self.on_delivery_selected)
+
 
     def setup_logo_toolbar(self):
         """로고 전용 툴바 생성"""
@@ -147,11 +244,63 @@ class MainWindow(QtWidgets.QMainWindow):
         # 설정 메뉴
         settings_menu = menubar.addMenu("설정")
 
+        # 필터 초기값 설정
+        filter_settings_action = QAction("필터 초기값 설정", self)
+        filter_settings_action.triggered.connect(self.open_filter_settings)
+        settings_menu.addAction(filter_settings_action)
+
+        # ✅ [추가] 환율 관리 메뉴
+        exchange_rate_action = QAction("환율 관리 (기준 환율)", self)
+        exchange_rate_action.setStatusTip("수익 분석을 위한 월별 기준 환율을 설정합니다")
+        exchange_rate_action.triggered.connect(self.open_exchange_rate_settings)
+        settings_menu.addAction(exchange_rate_action)
+
+        # ✅ [추가] 계산 설정 메뉴
+        calc_settings_action = QAction("계산 및 자동화 설정", self)
+        calc_settings_action.setStatusTip("금액 계산 방식을 설정합니다 (e.g., 반올림)")
+        calc_settings_action.triggered.connect(self.open_calculation_settings)
+        settings_menu.addAction(calc_settings_action)
+
+        # ✅ 색상 설정 추가
+        color_settings_action = QAction("색상 설정", self)
+        color_settings_action.setStatusTip("데이터 상태별 색상을 설정합니다")
+        color_settings_action.triggered.connect(self.open_color_settings)
+        settings_menu.addAction(color_settings_action)
+
         # 디스플레이 초기화 액션
         reset_display_action = QAction("디스플레이 초기화", self)
         reset_display_action.setStatusTip("모든 테이블 컬럼 폭과 트리 확장 상태를 기본값으로 되돌립니다")
         reset_display_action.triggered.connect(self.reset_display_settings)
         settings_menu.addAction(reset_display_action)
+
+        # 도구 메뉴
+        tools_menu = self.menuBar().addMenu("도구(&T)")
+
+        # 1. 미래 일정 동기화 (기본/빠름)
+        sync_future_action = QAction("Outlook 동기화 (오늘 이후)", self)
+        sync_future_action.setShortcut("F5")
+        sync_future_action.setStatusTip("오늘 이후 납품 예정인 건만 Outlook과 동기화합니다.")
+        sync_future_action.triggered.connect(self.run_outlook_sync_future)  # ✅ 연결
+        tools_menu.addAction(sync_future_action)
+
+        # 2. 전체 동기화 (느림/완전)
+        sync_all_action = QAction("Outlook 전체 동기화 (모든 일정)", self)
+        sync_all_action.setStatusTip("과거 데이터를 포함한 모든 주문을 Outlook과 동기화합니다.")
+        sync_all_action.triggered.connect(self.run_outlook_sync_all)  # ✅ 연결
+        tools_menu.addAction(sync_all_action)
+
+        tools_menu.addSeparator()
+
+        # 3. 완료된 일정 삭제
+        cleanup_action = QAction("Outlook 완료된 일정 삭제", self)
+        cleanup_action.triggered.connect(self.run_outlook_cleanup)
+        tools_menu.addAction(cleanup_action)
+
+        # 4. 전체 일정 삭제 (NEW)
+        delete_all_action = QAction("Outlook 일정 전체 삭제 (초기화)", self)
+        delete_all_action.setStatusTip("Outlook의 모든 작업을 삭제합니다. (주의!)")
+        delete_all_action.triggered.connect(self.run_outlook_delete_all)  # ✅ 연결
+        tools_menu.addAction(delete_all_action)
 
         # 도움말 메뉴
         help_menu = menubar.addMenu("도움말")
@@ -159,6 +308,98 @@ class MainWindow(QtWidgets.QMainWindow):
         about_action = QAction("정보", self)
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
+
+
+    def open_color_settings(self):
+        """색상 변경 다이얼로그를 엽니다."""
+        # ✅ 다이얼로그를 생성할 때 self.settings 객체를 전달합니다.
+        dialog = ColorSettingsDialog(self, settings=self.settings)
+
+        # ✅ 사용자가 '저장'을 눌렀을 때만 목록을 새로고침하도록 수정
+        if dialog.exec() == QtWidgets.QDialog.Accepted:
+            self.load_due_list()
+
+
+    def open_calculation_settings(self):
+        """(새 함수) 계산 설정 다이얼로그 열기"""
+        # calculation_settings_dialog.py 파일이 필요합니다.
+        try:
+            from .calculation_settings_dialog import CalculationSettingsDialog
+            dialog = CalculationSettingsDialog(self, settings=self.settings)
+            dialog.exec()
+        except ImportError:
+            QtWidgets.QMessageBox.critical(
+                self, "오류",
+                "계산 설정 파일을 찾을 수 없습니다 (calculation_settings_dialog.py)"
+            )
+
+
+    def open_exchange_rate_settings(self):
+        """환율 관리 다이얼로그 열기"""
+        try:
+            from .exchange_rate_dialog import ExchangeRateDialog
+            dialog = ExchangeRateDialog(self)
+            dialog.exec()
+        except ImportError:
+            QtWidgets.QMessageBox.critical(self, "오류", "환율 설정 파일(exchange_rate_dialog.py)을 찾을 수 없습니다.")
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "오류", f"환율 설정 창 열기 실패: {e}")
+
+
+    def refresh_order_purchase_delivery(self):
+        """
+        주문/발주/납품을 한 번에 새로고침한다.
+        - 주문: self.load_due_list(self.only_future)
+        - 발주: self.purchase_widget.load_purchase_list()
+        - 납품: self.delivery_widget.load_delivery_list()
+        """
+        try:
+            # 1) 주문
+            #   MainWindow 내부에 이미 존재하는 주문 새로고침 함수입니다.
+            #   기존 코드에서도 self.load_due_list(...)를 여러 곳에서 사용합니다.
+            self.load_due_list(self.only_future)
+
+            # 2) 발주
+            #   PurchaseWidget 인스턴스가 만들어져 있다면 테이블 새로고침
+            if hasattr(self, 'purchase_widget') and self.purchase_widget:
+                self.purchase_widget.load_purchase_list()
+
+            # 3) 납품
+            #   DeliveryWidget 인스턴스가 만들어져 있다면 테이블 새로고침
+            if hasattr(self, 'delivery_widget') and self.delivery_widget:
+                self.delivery_widget.load_delivery_list()
+
+        except Exception as e:
+            # 예외 시 사용자에게 알림
+            QtWidgets.QMessageBox.warning(self, "오류", f"새로고침 중 오류가 발생했습니다:\n{e}")
+
+
+    def refresh_current_tab(self):
+        """✅ 현재 선택된 탭 새로고침"""
+        current_index = self.main_tabs.currentIndex()
+        tab_name = self.main_tabs.tabText(current_index)
+
+        if "주문/발주/납품" in tab_name:
+            self.load_due_list()
+            if hasattr(self, 'purchase_widget'):
+                self.purchase_widget.load_purchase_list()
+            if hasattr(self, 'delivery_widget'):
+                self.delivery_widget.load_delivery_list()
+        elif "제품 생산" in tab_name:
+            if hasattr(self, 'product_production_widget'):
+                self.product_production_widget.load_product_list()
+        elif "제품 마스터" in tab_name:
+            if hasattr(self, 'product_master_widget'):
+                self.product_master_widget.load_product_list()
+        elif "재고 현황" in tab_name:
+            self.load_inventory_list()
+
+    def open_filter_settings(self):
+        """필터 설정 대화상자 열기"""
+        from .filter_settings_dialog import FilterSettingsDialog
+        dialog = FilterSettingsDialog(self)
+        dialog.exec()
+
 
     def reset_display_settings(self):
         """디스플레이 설정 초기화 (데이터는 안전합니다)"""
@@ -183,34 +424,40 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         try:
-            # 저장된 UI 설정만 삭제 (데이터는 안전)
-            keys_to_remove = [
-                "orders_table/column_widths",
+            # 1. 초기화할 모든 컬럼 폭 설정 키(이름) 목록을 직접 정의합니다.
+            column_width_keys = [
+                "order_table/column_widths",
                 "purchase_table/column_widths",
+                "delivery_main_table/column_widths",
+                "delivery_item_table/column_widths",
                 "product_table/column_widths",
                 "product_master_table/column_widths",
                 "inventory_table/column_widths",
-                "delivery_item_table/column_widths",
-                "product_tree/expanded_state"
+                "repair_table/column_widths"
             ]
 
-            for key in keys_to_remove:
+            # 2. 목록에 있는 설정들을 하나씩 명시적으로 삭제합니다.
+            for key in column_width_keys:
                 self.settings.remove(key)
+
+            # 3. 트리 확장 상태도 초기화
+            self.settings.remove("product_tree/expanded_state")
+
+            # 4. 창 크기/위치 관련 설정도 명시적으로 삭제합니다.
+            self.settings.remove("MainWindow/geometry")
+            self.settings.remove("MainWindow/state")
 
             QtWidgets.QMessageBox.information(
                 self,
                 "완료",
                 "디스플레이 설정이 초기화되었습니다.\n\n"
                 "프로그램을 다시 시작하면 기본 레이아웃이 적용됩니다.\n\n"
+                "⚠️ 초기화 후에는 컬럼을 조정하지 말고 바로 프로그램을 종료하세요.\n"
+                "컬럼을 조정하면 다시 설정이 저장됩니다.\n\n"
                 "✓ 모든 데이터는 안전하게 보존되었습니다."
             )
-
         except Exception as e:
-            QtWidgets.QMessageBox.critical(
-                self,
-                "오류",
-                f"디스플레이 초기화 중 오류가 발생했습니다:\n{str(e)}"
-            )
+            QtWidgets.QMessageBox.warning(self, "오류", f"초기화 중 오류 발생: {e}")
 
     def show_about(self):
         """프로그램 정보 표시"""
@@ -218,7 +465,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self,
             "KOBATECH 생산 관리 시스템",
             "<h3>KOBATECH 생산 관리 시스템</h3>"
-            "<p>버전: 1.0.0</p>"
+            "<p>버전: 1.9.10</p>"
             "<p>제품 생산 및 재고 관리를 위한 통합 시스템</p>"
             "<br>"
             "<p><b>주요 기능:</b></p>"
@@ -227,38 +474,58 @@ class MainWindow(QtWidgets.QMainWindow):
             "<li>제품 생산 관리</li>"
             "<li>재고 현황 추적</li>"
             "<li>제품 마스터 데이터 관리</li>"
+            "<li>수리 이력 관리</li>"
+            "<li>납품 달력</li>"
+            "<li>품질 분석</li>"
+            "<li>수익 분석</li>"
             "</ul>"
             "<br>"
             "<p>© 2025 KOBATECH. All rights reserved.</p>"
         )
 
+
     def on_tab_changed(self, index):
         """탭 전환 시 해당 탭의 데이터를 새로고침"""
+        # 현재 선택된 탭의 이름을 가져옵니다.
         tab_name = self.main_tabs.tabText(index)
 
+        # 각 탭의 이름에 맞는 새로고침 함수를 호출합니다.
         if tab_name == "주문/발주/납품":
-            # 주문, 발주, 납품 모두 새로고침
-            self.load_due_list(self.only_future)
-            if hasattr(self, 'purchase_widget'):
-                self.purchase_widget.load_purchase_list()
-            if hasattr(self, 'delivery_widget'):
-                self.delivery_widget.load_delivery_list()
+            # ✅ 단일 진입점
+            self.refresh_order_purchase_delivery()
 
-        elif tab_name == "제품 마스터":
-            self.product_master_widget.load_product_list()
+        elif tab_name == "품목 관리":
+            if hasattr(self, 'product_master_widget'):
+                self.product_master_widget.load_product_list()
+
+        elif tab_name == "BOM 관리":  # ✅ [추가 시작]
+            if hasattr(self, 'bom_widget'):
+                self.bom_widget.load_data_if_needed()
+            # ✅ [추가 끝]
 
         elif tab_name == "제품 생산":
-            # ✅ 제품 생산 탭으로 전환 시 무조건 새로고침
-            self.product_production_widget.load_product_list()
-            # print("✅ 제품 생산 목록 새로고침됨")  # 디버깅용
+            if hasattr(self, 'product_production_widget'):
+                self.product_production_widget.load_product_list()
+
+        elif tab_name == "수리 관리":
+            if hasattr(self, 'repair_widget'):
+                self.repair_widget.load_repair_list()
 
         elif tab_name == "재고 현황":
             self.load_inventory_data()
 
-    def closeEvent(self, event):
-        """🆕 프로그램 종료 시 설정 저장"""
-        self.save_all_column_widths()
-        event.accept()
+        elif tab_name == "납품 달력":
+            if hasattr(self, 'schedule_calendar_widget'):
+                self.schedule_calendar_widget.refresh_all_views()
+
+        # ✅ [추가] 품질 분석 탭 선택 시 데이터 로드
+        elif tab_name == "품질 분석":
+            self.analysis_widget.load_data()
+
+        # ✅ [추가] 탭 선택 시 데이터 로드
+        elif tab_name == "수익 분석":
+            if hasattr(self, 'profit_widget'):
+                self.profit_widget.load_data()
 
     def save_column_widths(self, table: QtWidgets.QTableWidget, table_name: str):
         """🆕 테이블의 컬럼 크기 저장"""
@@ -266,6 +533,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for col in range(table.columnCount()):
             widths.append(table.columnWidth(col))
         self.settings.setValue(f"{table_name}/column_widths", widths)
+
 
     def restore_column_widths(self, table: QtWidgets.QTableWidget, table_name: str):
         """🆕 테이블의 컬럼 크기 복원"""
@@ -275,29 +543,81 @@ class MainWindow(QtWidgets.QMainWindow):
                 if col < table.columnCount():
                     table.setColumnWidth(col, int(width))
 
+
     def save_all_column_widths(self):
         """🆕 모든 테이블의 컬럼 크기 저장"""
         self.save_column_widths(self.table, "orders_table")
         self.save_column_widths(self.inventory_table, "inventory_table")
 
+
     def create_order_purchase_delivery_widget(self):
+        # 1) 래퍼 위젯 + 수직 레이아웃
         widget = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
 
-        main_splitter = QSplitter(Qt.Vertical)
+        # 2) 상단 바: 제목 + 통합 새로고침 버튼
+        topbar = QtWidgets.QHBoxLayout()
+        title_label = QtWidgets.QLabel("주문 / 발주 / 납품")
+        title_label.setStyleSheet("font-weight: bold; color: #333;")
+
+        btn_refresh_all = QtWidgets.QPushButton("새로고침")
+        btn_refresh_all.setToolTip("주문/발주/납품 데이터를 한 번에 새로고침합니다.")
+        btn_refresh_all.clicked.connect(self.refresh_order_purchase_delivery)  # ← #1 단계에서 만든 메서드
+
+        topbar.addWidget(title_label)
+        topbar.addStretch()
+        topbar.addWidget(btn_refresh_all)
+        layout.addLayout(topbar)
+
+        # 3) 기존 메인 스플리터 구성 (원래 코드 유지)
+        self.main_splitter = QSplitter(Qt.Vertical)
 
         order_widget = self.create_order_widget()
+
+        # 1. 위젯을 먼저 생성합니다.
         self.purchase_widget = PurchaseWidget(settings=self.settings)  # 🆕 self.purchase_widget로 저장
+        # 2. 생성된 위젯의 속성을 설정합니다.
+        self.purchase_widget.table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+
+        # 1. 위젯을 먼저 생성합니다.
         self.delivery_widget = DeliveryWidget(self, settings=self.settings)  # ✅ settings 전달
-        self.delivery_widget.layout().setContentsMargins(10, 10, 10, 10)  # ✅
+        # 2. 생성된 위젯의 속성을 설정합니다.
+        self.delivery_widget.table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.delivery_widget.layout().setContentsMargins(10, 10, 10, 10)
 
-        main_splitter.addWidget(order_widget)
-        main_splitter.addWidget(self.purchase_widget)
-        main_splitter.addWidget(self.delivery_widget)
+        # ── 개별 새로고침 버튼 숨김 (통합 버튼만 노출)
+        try:
+            # 발주 탭 새로고침 버튼 (이미 self 속성으로 제공됨)
+            if hasattr(self.purchase_widget, "btn_refresh_purchase"):
+                self.purchase_widget.btn_refresh_purchase.setVisible(False)  # OK
+            # 납품 탭 새로고침 버튼 (3-1 단계에서 self.btn_refresh로 승격 완료)
+            if hasattr(self.delivery_widget, "btn_refresh"):
+                self.delivery_widget.btn_refresh.setVisible(False)  # OK
+            # 주문(직접 속성 접근)
+            btn = order_widget.findChild(QtWidgets.QPushButton, "orders_refresh_button")
+            if btn:
+                btn.setVisible(False)
+            else:
+            # (대안) 직접 속성 접근: self.btn_refresh
+                if hasattr(self, "btn_refresh"):
+                    self.btn_refresh.setVisible(False)
 
-        main_splitter.setSizes([300, 300, 300])
+        except Exception as e:
+            print(f"하위 새로고침 버튼 숨김 실패: {e}")
 
-        layout.addWidget(main_splitter)
+        self.main_splitter.addWidget(order_widget)
+        self.main_splitter.addWidget(self.purchase_widget)
+        self.main_splitter.addWidget(self.delivery_widget)
+        self.main_splitter.setSizes([300, 300, 300])
+
+        # ✅ 스플리터 상태 복원
+        if self.settings.contains("MainWindow/splitter_state"):
+            self.main_splitter.restoreState(self.settings.value("MainWindow/splitter_state"))
+
+        # 4) 스플리터를 레이아웃에 추가하고 래퍼 위젯 반환
+        layout.addWidget(self.main_splitter)
         return widget
 
     def create_inventory_widget(self):
@@ -312,9 +632,9 @@ class MainWindow(QtWidgets.QMainWindow):
         refresh_btn.clicked.connect(lambda: self.load_inventory_data())
 
         # 전체보기 버튼 추가
-        self.btn_show_all_inventory = QtWidgets.QPushButton("미완료만")
+        self.btn_show_all_inventory = QtWidgets.QPushButton("전체보기" if self.show_all_inventory else "미완료만")
         self.btn_show_all_inventory.setCheckable(True)
-        self.btn_show_all_inventory.setChecked(False)
+        self.btn_show_all_inventory.setChecked(self.show_all_inventory)
         self.btn_show_all_inventory.toggled.connect(self.toggle_show_all_inventory)
 
         title_layout.addWidget(title_label)
@@ -323,14 +643,19 @@ class MainWindow(QtWidgets.QMainWindow):
         title_layout.addSpacing(12)
         title_layout.addWidget(self.btn_show_all_inventory)
 
-        self.inventory_table = QtWidgets.QTableWidget(0, 6)
+        # ✅ 컬럼 개수 및 헤더 변경 (품목별로 표시하기 위함)
+        self.inventory_table = QtWidgets.QTableWidget(0, 10)
         self.inventory_table.setHorizontalHeaderLabels(
-            ["발주번호", "발주내용", "발주량/생산량", "납품완료", "재고수량", "상태"]
+            ["발주번호", "품목코드", "발주내용(품목)", "발주량", "생산량", "납품완료", "재고수량", "소모량", "할당량", "상태"]
         )
         self.inventory_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.inventory_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.inventory_table.setAlternatingRowColors(True)
         self.inventory_table.setSortingEnabled(True)
+
+        # ✅ [추가] 우클릭 메뉴(컨텍스트 메뉴) 정책 설정
+        self.inventory_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.inventory_table.customContextMenuRequested.connect(self.show_inventory_context_menu)
 
         self.inventory_table.verticalHeader().setDefaultSectionSize(25)
         self.inventory_table.setShowGrid(True)
@@ -339,22 +664,34 @@ class MainWindow(QtWidgets.QMainWindow):
         for col in range(self.inventory_table.columnCount()):
             header.setSectionResizeMode(col, QHeaderView.Interactive)
 
-        self.inventory_table.setColumnWidth(0, 100)
-        self.inventory_table.setColumnWidth(1, 300)
-        self.inventory_table.setColumnWidth(2, 120)
-        self.inventory_table.setColumnWidth(3, 100)
-        self.inventory_table.setColumnWidth(4, 100)
-        self.inventory_table.setColumnWidth(5, 100)
+        # ✅ 컬럼 폭 재설정
+        self.inventory_table.setColumnWidth(0, 120)  # 발주번호
+        self.inventory_table.setColumnWidth(1, 120)  # 품목코드
+        self.inventory_table.setColumnWidth(2, 300)  # 발주내용(품목)
+        self.inventory_table.setColumnWidth(3, 80)  # 발주량
+        self.inventory_table.setColumnWidth(4, 80)  # 생산량
+        self.inventory_table.setColumnWidth(5, 80)  # 납품완료
+        self.inventory_table.setColumnWidth(6, 80)  # 재고수량
+        self.inventory_table.setColumnWidth(7, 80)  # ✅ [추가] 소모량
+        self.inventory_table.setColumnWidth(8, 80)  # ✅ [변경] 할당량 (7->8)
+        self.inventory_table.setColumnWidth(9, 120)  # ✅ [변경] 상태 (8->9)
 
         self.restore_column_widths(self.inventory_table, "inventory_table")
         header.sectionResized.connect(lambda: self.save_column_widths(self.inventory_table, "inventory_table"))
+
+        # ✅ [추가] 재고 현황 테이블 헤더에 시그널 연결 및 화살표 표시
+        header.sortIndicatorChanged.connect(self.on_inventory_sort_changed)
+        header.setSortIndicatorShown(True)
 
         layout.addLayout(title_layout)
         layout.addWidget(self.inventory_table)
 
         self.load_inventory_data()
 
+        apply_table_resize_policy(self.inventory_table)
+
         return widget
+
 
     def create_order_widget(self):
         """주문 위젯 생성"""
@@ -367,12 +704,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.btn_new = QtWidgets.QPushButton("새 주문")
         self.btn_refresh = QtWidgets.QPushButton("새로고침")
-        self.btn_show_all = QtWidgets.QPushButton("미청구만")
+        self.btn_refresh.setObjectName("orders_refresh_button")  # ← 식별자 부여
+        self.btn_show_all = QtWidgets.QPushButton("전체보기" if self.show_all_billed else "미청구만")
 
         self.btn_new.clicked.connect(self.add_order_with_autocomplete)
         self.btn_refresh.clicked.connect(lambda: self.load_due_list(self.only_future))
         self.btn_show_all.setCheckable(True)
-        self.btn_show_all.setChecked(False)
+        self.btn_show_all.setChecked(self.show_all_billed)
         self.btn_show_all.toggled.connect(self.toggle_show_all_billed)
 
         title_layout.addWidget(title_label)
@@ -386,11 +724,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.table = QtWidgets.QTableWidget(0, 11)
         self.table.setHorizontalHeaderLabels(
             ["주문일", "주문번호", "품목코드", "Rev", "품목 / 수량", "제품명", "주문금액(엔)",
-             "최초납기", "최종납기", "OA 발송", "청구 완료"]
+             "최초납기", "최종납기", "OA 발송", "완료처리"]
         )
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        # ✅ [수정] 다중 선택 모드로 변경 (연관 항목 다중 표시에 필수)
+        self.table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.table.setAlternatingRowColors(True)
+        # ✅ [수정] QTableWidget의 자체 정렬을 다시 켭니다. (화살표 표시용)
         self.table.setSortingEnabled(True)
 
         self.table.verticalHeader().setDefaultSectionSize(25)
@@ -404,42 +745,93 @@ class MainWindow(QtWidgets.QMainWindow):
         for col in range(self.table.columnCount()):
             header.setSectionResizeMode(col, QHeaderView.Interactive)
 
-        self.table.setColumnWidth(0, 100)  # 주문일
-        self.table.setColumnWidth(1, 120)  # 주문번호
-        self.table.setColumnWidth(2, 120)  # 품목코드
-        self.table.setColumnWidth(3, 60)  # Rev
+        self.table.setColumnWidth(0, 90)  # 주문일
+        self.table.setColumnWidth(1, 80)  # 주문번호
+        self.table.setColumnWidth(2, 210)  # 품목코드
+        self.table.setColumnWidth(3, 40)  # Rev
         self.table.setColumnWidth(4, 90)  # 품목/수량 (폭 조정)
-        self.table.setColumnWidth(5, 300)  # 제품명
-        self.table.setColumnWidth(6, 120)  # 주문금액
-        self.table.setColumnWidth(7, 100)  # 최초납기
-        self.table.setColumnWidth(8, 100)  # 최종납기
+        self.table.setColumnWidth(5, 530)  # 제품명
+        self.table.setColumnWidth(6, 80)  # 주문금액
+        self.table.setColumnWidth(7, 80)  # 최초납기
+        self.table.setColumnWidth(8, 110)  # 최종납기
         self.table.setColumnWidth(9, 80)  # OA 발송
         self.table.setColumnWidth(10, 90)  # 청구 완료
 
         if self.settings:
-            self.restore_column_widths(self.table, "orders_table")
+            self.restore_column_widths(self.table, "order_table")
 
-        header.sectionResized.connect(lambda: self.save_column_widths(self.table, "orders_table"))
+        header.sectionResized.connect(lambda: self.save_column_widths(self.table, "order_table"))
+        # ✅ [수정] 'sectionClicked' 대신 'sortIndicatorChanged' 시그널을 사용합니다.
+        header.sortIndicatorChanged.connect(self.on_order_sort_changed)
 
         layout.addLayout(title_layout)
         layout.addWidget(self.table)
 
         self.order_data = []
 
+        apply_table_resize_policy(self.table)
+
         return widget
+
+    def closeEvent(self, event):
+        """프로그램 종료 시 모든 설정을 저장합니다."""
+        try:
+            # ✅ [추가] 1. 메인 윈도우의 현재 크기 및 위치를 저장
+            self.settings.setValue("MainWindow/geometry", self.saveGeometry())
+            # ✅ [추가] 2. 메인 윈도우의 상태(툴바 위치 등) 저장
+            self.settings.setValue("MainWindow/state", self.saveState())
+
+            # ✅ [추가] 3. 주문/발주/납품 탭의 스플리터(높낮이) 상태 저장
+            if hasattr(self, 'main_splitter'):
+                self.settings.setValue("MainWindow/splitter_state", self.main_splitter.saveState())
+
+            # 4. 메인 윈도우의 테이블들 너비 저장
+            self.save_column_widths(self.table, "order_table")
+            self.save_column_widths(self.inventory_table, "inventory_table")
+
+            # 5. 각 탭에 있는 위젯의 테이블 너비 저장
+            if hasattr(self, 'purchase_widget'):
+                self.purchase_widget.save_column_widths()
+            if hasattr(self, 'delivery_widget'):
+                self.delivery_widget.save_column_widths()
+            if hasattr(self, 'product_master_widget'):
+                self.product_master_widget.save_column_widths()
+            if hasattr(self, 'product_production_widget'):
+                self.product_production_widget.save_column_widths()
+            if hasattr(self, 'repair_widget'):
+                self.repair_widget.save_column_widths()
+
+            # 6. 제품 생산 탭의 트리 확장 상태 저장
+            if hasattr(self, 'product_production_widget'):
+                self.product_production_widget.save_expanded_state()
+
+        except Exception as e:
+            print(f"설정 저장 중 오류 발생: {e}")
+
+        event.accept()  # 창 닫기를 수락합니다.
+
 
     def toggle_show_all_billed(self, checked: bool):
         self.show_all_billed = checked
         self.btn_show_all.setText("전체보기" if checked else "미청구만")
         self.load_due_list(self.only_future)
 
-    def sort_by_column(self, column):
-        if self.current_sort_column == column:
-            self.current_sort_order = Qt.DescendingOrder if self.current_sort_order == Qt.AscendingOrder else Qt.AscendingOrder
-        else:
-            self.current_sort_column = column
-            self.current_sort_order = Qt.AscendingOrder
+    def on_order_sort_changed(self, column_index, order):
+        """(새 함수) 주문 테이블 헤더의 정렬 표시기가 변경될 때 호출됩니다."""
 
+        # 1. 현재 상태와 동일하면 (load_due_list에 의한 프로그래밍 방식 호출), 무시
+        if self.current_sort_column == column_index and self.current_sort_order == order:
+            return
+
+        # 2. 사용자 클릭에 의한 변경이므로, 새 정렬 상태를 저장
+        self.current_sort_column = column_index
+        self.current_sort_order = order
+
+        # 3. 새 정렬 상태를 QSettings에 저장
+        self.settings.setValue("orders_table/sort_column", self.current_sort_column)
+        self.settings.setValue("orders_table/sort_order", self.current_sort_order)  # enum도 int로 자동 저장됨
+
+        # 4. 새 정렬 기준으로 데이터 목록을 다시 로드 (SQL 정렬)
         self.load_due_list(self.only_future)
 
     def show_context_menu(self, position):
@@ -454,168 +846,28 @@ class MainWindow(QtWidgets.QMainWindow):
         delete_action = menu.addAction("삭제")
         delete_action.triggered.connect(self.delete_order)
 
-        due_change_action = menu.addAction("납기 변경")
+        # ✅ '납기 변경' 메뉴를 다시 추가합니다.
+        menu.addSeparator()
+        due_change_action = menu.addAction("납기 일정 관리")
         due_change_action.triggered.connect(self.change_due_date)
 
         menu.exec_(self.table.mapToGlobal(position))
 
     def add_order_with_autocomplete(self):
-        """새 주문 추가"""
+        """새 주문 추가 (모달리스)"""
         dialog = ProductOrderDialog(self, is_edit=False)
-        if dialog.exec() == QtWidgets.QDialog.Accepted:
-            self.load_due_list(self.only_future)
+        # ✅ 데이터 변경 후(Accepted) 목록 새로고침
+        dialog.accepted.connect(lambda: self.load_due_list(self.only_future))
+        # ✅ 창이 닫히면(Finished) 참조 목록에서 제거
+        dialog.finished.connect(lambda: self.cleanup_order_dialog(dialog))
+        
+        dialog.show()
+        self.active_order_dialogs.append(dialog)
 
-    def load_due_list(self, only_future: bool = True):
-        """주문 목록 로드 (신규 구조)"""
-        self.only_future = only_future
-        try:
-            conn = get_conn()
-            cur = conn.cursor()
-
-            sql = """
-                SELECT 
-                    o.id,
-                    o.order_dt,
-                    o.order_no,
-                    o.req_due,
-                    o.final_due,
-                    o.oa_sent,
-                    o.invoice_done,
-                    COUNT(oi.id) as item_count,
-                    SUM(oi.qty) as total_qty,
-                    GROUP_CONCAT(oi.item_code, ', ') as item_codes,
-                    GROUP_CONCAT(oi.rev, ', ') as revs,
-                    GROUP_CONCAT(oi.product_name, ' | ') as product_names,
-                    oa.total_cents / 100.0 as amount_jpy
-                FROM orders o
-                LEFT JOIN order_items oi ON o.id = oi.order_id
-                LEFT JOIN order_amounts oa ON o.id = oa.order_id
-            """
-
-            conds = []
-            if not self.show_all_billed:
-                conds.append("COALESCE(o.invoice_done, 0) = 0")
-            if self.only_future:
-                conds.append("(o.req_due IS NULL OR date(COALESCE(o.final_due, o.req_due)) >= date('now','localtime'))")
-
-            if conds:
-                sql += " WHERE " + " AND ".join(conds)
-
-            sql += " GROUP BY o.id"
-
-            order_clause = self.get_order_clause()
-            sql += f" ORDER BY {order_clause}"
-
-            cur.execute(sql)
-            rows = cur.fetchall()
-
-            self.order_data = rows
-            self.table.setRowCount(len(rows))
-            self.table.setSortingEnabled(False)
-
-            for r, row in enumerate(rows):
-                (order_id, order_dt, order_no, req_due, final_due,
-                 oa_sent, invoice_done, item_count, total_qty, item_codes, revs, product_names, amount_jpy) = row
-
-                # order_id 저장
-                item_0 = QtWidgets.QTableWidgetItem("" if order_dt is None else str(order_dt))
-                item_0.setData(Qt.UserRole, order_id)
-                self.table.setItem(r, 0, item_0)
-
-                self.table.setItem(r, 1, QtWidgets.QTableWidgetItem(str(order_no or "")))
-
-                # 품목코드 표시 (중복 제거 처리)
-                if item_codes:
-                    codes_list = [c.strip() for c in str(item_codes).split(',') if c.strip() and c.strip() != 'None']
-                    unique_codes = []
-                    for code in codes_list:
-                        if code not in unique_codes:
-                            unique_codes.append(code)
-                    display_codes = ', '.join(unique_codes)
-                    if len(display_codes) > 50:
-                        display_codes = display_codes[:47] + "..."
-                    self.table.setItem(r, 2, QtWidgets.QTableWidgetItem(display_codes))
-                else:
-                    self.table.setItem(r, 2, QtWidgets.QTableWidgetItem(""))
-
-                # Rev 표시 (중복 제거 처리)
-                if revs:
-                    revs_list = [rv.strip() for rv in str(revs).split(',') if rv.strip() and rv.strip() != 'None']
-                    unique_revs = []
-                    for rv in revs_list:
-                        if rv not in unique_revs:
-                            unique_revs.append(rv)
-                    display_revs = ', '.join(unique_revs) if unique_revs else ""
-                    if len(display_revs) > 30:
-                        display_revs = display_revs[:27] + "..."
-                    self.table.setItem(r, 3, QtWidgets.QTableWidgetItem(display_revs))
-                else:
-                    self.table.setItem(r, 3, QtWidgets.QTableWidgetItem(""))
-
-                # 품목/수량 표시 (예: "1종/5개")
-                total_qty_display = total_qty if total_qty else 0
-                self.table.setItem(r, 4, QtWidgets.QTableWidgetItem(f"{item_count}종 / {total_qty_display}개"))
-
-                # 제품명 (여러 개면 요약)
-                if product_names:
-                    display_names = product_names if len(product_names) < 80 else product_names[:77] + "..."
-                    self.table.setItem(r, 5, QtWidgets.QTableWidgetItem(display_names))
-                else:
-                    self.table.setItem(r, 5, QtWidgets.QTableWidgetItem(""))
-
-                self.table.setItem(r, 6, QtWidgets.QTableWidgetItem(format_money(amount_jpy)))
-                self.table.setItem(r, 7, QtWidgets.QTableWidgetItem(str(req_due or "")))
-                self.table.setItem(r, 8, QtWidgets.QTableWidgetItem(str(final_due or "")))
-
-                # OA 발송 체크박스
-                oa_checkbox = QtWidgets.QCheckBox()
-                oa_checkbox.setChecked(bool(oa_sent))
-                oa_checkbox.setStyleSheet("QCheckBox { margin-left: 20px; }")
-                oa_checkbox.stateChanged.connect(
-                    lambda state, oid=order_id: self.update_oa_status(oid, state)
-                )
-
-                oa_widget = QtWidgets.QWidget()
-                oa_layout = QtWidgets.QHBoxLayout(oa_widget)
-                oa_layout.addWidget(oa_checkbox)
-                oa_layout.setAlignment(Qt.AlignCenter)
-                oa_layout.setContentsMargins(0, 0, 0, 0)
-                self.table.setCellWidget(r, 9, oa_widget)
-
-                # 청구 완료 체크박스
-                invoice_checkbox = QtWidgets.QCheckBox()
-                invoice_checkbox.setChecked(bool(invoice_done))
-                invoice_checkbox.setStyleSheet("QCheckBox { margin-left: 20px; }")
-                invoice_checkbox.stateChanged.connect(
-                    lambda state, oid=order_id: self.update_invoice_status(oid, state)
-                )
-
-                invoice_widget = QtWidgets.QWidget()
-                invoice_layout = QtWidgets.QHBoxLayout(invoice_widget)
-                invoice_layout.addWidget(invoice_checkbox)
-                invoice_layout.setAlignment(Qt.AlignCenter)
-                invoice_layout.setContentsMargins(0, 0, 0, 0)
-                self.table.setCellWidget(r, 10, invoice_widget)
-
-                # ✅ 청구 완료된 항목은 회색으로 표시
-                if invoice_done:
-                    from PySide6.QtGui import QBrush, QColor
-                    for col in range(11):  # 0~10번 컬럼
-                        if self.table.item(r, col):
-                            self.table.item(r, col).setForeground(QBrush(QColor("#888888")))
-
-            self.table.setSortingEnabled(True)
-            for i in range(self.table.rowCount()):
-                self.table.setRowHeight(i, 25)
-
-        except Exception as e:
-            print(f"주문 목록 로드 중 오류: {e}")
-            import traceback
-            traceback.print_exc()
-            self.order_data = []
-            self.table.setRowCount(0)
-        finally:
-            conn.close()
+    def cleanup_order_dialog(self, dialog):
+        """닫힌 주문 다이얼로그를 참조 목록에서 제거"""
+        if dialog in self.active_order_dialogs:
+            self.active_order_dialogs.remove(dialog)
 
     def update_invoice_status(self, order_id: int, state: int):
         """청구 완료 상태 업데이트"""
@@ -630,14 +882,17 @@ class MainWindow(QtWidgets.QMainWindow):
 
             if invoice_done == 1 and not self.show_all_billed:
                 self.load_due_list(self.only_future)
-                self.statusBar().showMessage("청구 완료 처리되었습니다. (미청구 목록에서 제거됨)", 3000)
+                self.statusBar().showMessage("강제 완료 처리되었습니다. (미청구 목록에서 제거됨)", 3000)
             else:
-                self.statusBar().showMessage("청구 완료 상태가 변경되었습니다.", 2000)
+                self.statusBar().showMessage("강제 완료 상태가 변경되었습니다.", 2000)
 
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "오류", f"청구 상태 업데이트 중 오류:\n{str(e)}")
         finally:
             conn.close()
+
+        self.refresh_order_purchase_delivery()
+
 
     def update_oa_status(self, order_id: int, state: int):
         """OA 발송 상태 업데이트"""
@@ -705,121 +960,53 @@ class MainWindow(QtWidgets.QMainWindow):
         return None
 
     def change_due_date(self):
-        order_data = self.get_selected_order()
-        if not order_data:
-            QtWidgets.QMessageBox.information(self, "알림", "납기를 변경할 주문을 선택해주세요.")
+        """새로운 '납기 일정 관리' 창을 여는 기능"""
+        selected_row = self.table.currentRow()
+        if selected_row < 0:
+            QtWidgets.QMessageBox.information(self, "알림", "납기 일정을 관리할 주문을 선택해주세요.")
             return
 
-        # order_data 구조: (order_id, order_dt, order_no, req_due, final_due, oa_sent, invoice_done,
-        #                    item_count, item_codes, product_names, amount_jpy)
-        order_id = order_data[0]
-        order_no = order_data[2]
-        req_due = order_data[3]
-        final_due = order_data[4]
-        product_names = order_data[9]
+        item = self.table.item(selected_row, 0)
+        if not item: return
 
-        dlg = QtWidgets.QDialog(self)
-        dlg.setWindowTitle(f"납기 변경 - {order_no}")
-        dlg.setMinimumWidth(700)
-        form = QtWidgets.QFormLayout(dlg)
+        order_id = item.data(Qt.UserRole)
+        order_no = self.table.item(selected_row, 1).text()
 
-        info_label = QtWidgets.QLabel(f"주문: {order_no} - {product_names}")
-        info_label.setStyleSheet("font-weight: bold; font-size: 12px; color: #333;")
-        form.addRow(info_label)
-
-        current_due_label = QtWidgets.QLabel(f"현재 최종납기: {final_due or req_due}")
-        current_due_label.setStyleSheet("color: #666;")
-        form.addRow(current_due_label)
-
-        form.addRow(QtWidgets.QLabel(""))
-
-        change_date_entry = QtWidgets.QLineEdit()
-        change_date_entry.setText(datetime.now().strftime('%Y-%m-%d'))
-        change_date_entry.setPlaceholderText("예: 2025-10-15")
-
-        new_due_entry = QtWidgets.QLineEdit()
-        new_due_entry.setText(final_due or req_due or "")
-        new_due_entry.setPlaceholderText("예: 2025-10-20")
-
-        reason_entry = QtWidgets.QLineEdit()
-        reason_entry.setText("고객 요청에 의한 연기")
-        reason_entry.setPlaceholderText("예: 고객 요청에 의한 연기")
-
-        form.addRow("변경 요청일*:", change_date_entry)
-        form.addRow("새로운 납기일*:", new_due_entry)
-        form.addRow("변경 사유:", reason_entry)
-
-        form.addRow(QtWidgets.QLabel(""))
-        history_label = QtWidgets.QLabel("납기 변경 이력:")
-        history_label.setStyleSheet("font-weight: bold;")
-        form.addRow(history_label)
-
-        history_table = QtWidgets.QTableWidget(0, 4)
-        history_table.setHorizontalHeaderLabels(["변경일자", "변경전", "변경후", "사유"])
-        history_table.setMaximumHeight(150)
-
-        header = history_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.Interactive)
-        history_table.setColumnWidth(3, 200)
-
-        history_data = get_due_change_history(order_id)
-        history_table.setRowCount(len(history_data))
-
-        for r, (change_id, change_date, old_due, new_due, reason, created_at) in enumerate(history_data):
-            history_table.setItem(r, 0, QtWidgets.QTableWidgetItem(str(change_date)))
-            history_table.setItem(r, 1, QtWidgets.QTableWidgetItem(str(old_due or "")))
-            history_table.setItem(r, 2, QtWidgets.QTableWidgetItem(str(new_due)))
-            history_table.setItem(r, 3, QtWidgets.QTableWidgetItem(str(reason or "")))
-
-        form.addRow(history_table)
-
-        btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
-        btns.accepted.connect(dlg.accept)
-        btns.rejected.connect(dlg.reject)
-        form.addRow(btns)
-
-        if dlg.exec() != QtWidgets.QDialog.Accepted:
+        if not order_id:
+            QtWidgets.QMessageBox.warning(self, "오류", "선택된 주문의 ID를 찾을 수 없습니다.")
             return
 
-        change_date_raw = change_date_entry.text().strip()
-        new_due_raw = new_due_entry.text().strip()
-        reason = reason_entry.text().strip()
+        # 새로운 ScheduleDialog를 실행합니다.
+        dialog = ScheduleDialog(order_id=order_id, order_no=order_no, parent=self)
+        dialog.exec()
 
-        if not change_date_raw or not new_due_raw:
-            QtWidgets.QMessageBox.warning(self, "입력 오류", "변경 요청일과 새로운 납기일은 필수입니다.")
-            return
-
-        change_date = parse_due_text(change_date_raw)
-        new_due = parse_due_text(new_due_raw)
-
-        if not change_date or not new_due:
-            QtWidgets.QMessageBox.warning(self, "날짜 형식 오류", "날짜 형식이 올바르지 않습니다. 예: 2025-10-15")
-            return
-
-        try:
-            old_due = final_due or req_due
-            add_due_change_record(order_id, change_date, old_due, new_due, reason)
-            update_order_final_due_date(order_id, new_due)
-
-            self.load_due_list(self.only_future)
-            QtWidgets.QMessageBox.information(self, "완료", "납기일이 변경되었습니다.")
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "오류", f"납기 변경 중 오류가 발생했습니다:\n{str(e)}")
+        # 창이 닫힌 후, 변경사항이 있을 수 있으므로 주문 목록을 새로고침합니다.
+        self.load_due_list()
 
     def edit_order(self):
-        """주문 수정"""
+        """주문 수정 (모달리스)"""
         order_data = self.get_selected_order()
         if not order_data:
             QtWidgets.QMessageBox.information(self, "알림", "수정할 주문을 선택해주세요.")
             return
 
         order_id = order_data[0]
+
+        # ✅ 이미 열려있는 창이 있으면 활성화만 하고 중복 열기 방지
+        for dlg in self.active_order_dialogs:
+            if getattr(dlg, 'order_id', None) == order_id:
+                dlg.raise_()
+                dlg.activateWindow()
+                return
+
         dialog = ProductOrderDialog(self, is_edit=True, order_id=order_id)
-        if dialog.exec() == QtWidgets.QDialog.Accepted:
-            self.load_due_list(self.only_future)
+        # ✅ 데이터 변경 후 목록 새로고침
+        dialog.accepted.connect(lambda: self.load_due_list(self.only_future))
+        # ✅ 창 닫히면 정리
+        dialog.finished.connect(lambda: self.cleanup_order_dialog(dialog))
+        
+        dialog.show()
+        self.active_order_dialogs.append(dialog)
 
         '''order_id, order_dt, order_no, item_code, rev, order_desc, qty, amount_jpy, oa_sent, req_due, final_due, unit_price_cents, invoice_done = order_data
 
@@ -974,108 +1161,786 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_show_all_inventory.setText("전체보기" if checked else "미완료만")
         self.load_inventory_data()
 
+    # app/main_window.py (896라인 함수 교체)
+
     def load_inventory_data(self):
-        """재고 현황 로드"""
+        """재고 현황 로드 (주문 수요 기반 부족 수량 표시)"""
         try:
+            from PySide6.QtGui import QBrush, QColor
             conn = get_conn()
             cur = conn.cursor()
 
-            # ✅ 수정된 SQL 쿼리: d.purchase_id -> delivery_purchase_links 테이블 조인으로 변경
+            # 1) 색상 팔레트 읽기
+            comp_fg = QColor(self.settings.value("colors/inventory_completed_fg", "#000000"))
+            comp_bg = QColor(self.settings.value("colors/inventory_completed_bg", "#E8F5E9"))
+            incomp_fg = QColor(self.settings.value("colors/inventory_incomplete_fg", "#000000"))
+            incomp_bg = QColor(self.settings.value("colors/inventory_incomplete_bg", "#FFFFFF"))
+            repair_fg = QColor(self.settings.value("colors/product_repaired_fg", "#006633"))
+            repair_bg = QColor(self.settings.value("colors/product_repaired_bg", "#E8F5E9"))
+
+            # 2) SQL 작성
             sql = """
+                /* 1. 발주서 기반 재고 */
                 SELECT
-                    p.id,
-                    p.purchase_no,
-                    GROUP_CONCAT(pi.product_name, ' | ') as purchase_desc,
-                    SUM(pi.qty) as order_qty,
-                    (SELECT COUNT(*) FROM products pr WHERE pr.purchase_id = p.id) as produced_qty,
-                    (SELECT COALESCE(SUM(di.qty), 0)
-                     FROM delivery_items di
-                     JOIN delivery_purchase_links dpl ON di.delivery_id = dpl.delivery_id
-                     WHERE dpl.purchase_id = p.id) as delivered_qty
-                FROM purchases p
-                LEFT JOIN purchase_items pi ON p.id = pi.purchase_id
-                WHERE p.purchase_no IS NOT NULL
-                GROUP BY p.id
-                ORDER BY p.purchase_dt DESC
+                    p.id AS purchase_id, p.status AS purchase_status, p.purchase_no,
+                    pi.item_code, pi.product_name,
+                    EXISTS (SELECT 1 FROM bom_items b WHERE b.parent_item_code = pi.item_code) as is_assembly,
+                    pi.qty AS ordered_qty,
+
+                    -- 생산량
+                    (SELECT COUNT(*) FROM products pr WHERE pr.purchase_id = p.id AND pr.part_no = pi.item_code) AS produced_qty,
+
+                    -- 납품완료 수량
+                    (SELECT COUNT(*) FROM products pr 
+                     WHERE pr.purchase_id = p.id 
+                       AND pr.part_no = pi.item_code 
+                       AND pr.consumed_by_product_id IS NULL
+                       AND (
+                           pr.delivery_id IS NOT NULL 
+                           OR EXISTS (SELECT 1 FROM product_repairs r WHERE r.product_id = pr.id)
+                       )
+                    ) AS delivered_qty,
+
+                    -- 소모량
+                    (SELECT COUNT(*) FROM products pr WHERE pr.purchase_id = p.id AND pr.part_no = pi.item_code AND pr.consumed_by_product_id IS NOT NULL) AS consumed_qty,
+
+                    -- 할당가능(Free Stock) 수량
+                    (SELECT COUNT(*) 
+                     FROM products pr 
+                     WHERE pr.purchase_id = p.id 
+                       AND pr.part_no = pi.item_code
+                       AND pr.reserved_order_id IS NULL
+                       AND pr.delivery_id IS NULL
+                       AND pr.consumed_by_product_id IS NULL
+                    ) as free_stock_qty,
+
+                    COALESCE(
+                        (SELECT 'KT' || PRINTF('%%03d', (COALESCE(CAST(SUBSTR(pr.serial_no, 3) AS INTEGER), 0) %% 999) + 1)
+                         FROM products pr WHERE pr.part_no = pi.item_code AND pr.consumed_by_product_id IS NULL AND pr.serial_no LIKE 'KT%%'
+                         ORDER BY CAST(SUBSTR(pr.serial_no, 3) AS INTEGER) DESC LIMIT 1
+                        ), 'KT001'
+                    ) as next_serial_no,
+
+                    -- ✅ [추가] 연결된 주문들의 총 요구 수량 (Demand)
+                    (SELECT COALESCE(SUM(oi.qty), 0)
+                     FROM order_items oi
+                     JOIN purchase_order_links pol ON oi.order_id = pol.order_id
+                     WHERE pol.purchase_id = p.id
+                       AND oi.item_code = pi.item_code
+                    ) as demand_qty
+
+                FROM purchase_items pi
+                JOIN purchases p ON pi.purchase_id = p.id
+                LEFT JOIN product_master pm ON pi.item_code = pm.item_code 
+                                     AND (pm.rev IS NULL OR pm.rev = '' OR pm.rev = pi.rev)
+                WHERE (pm.item_type = 'SELLABLE' OR pm.item_type IS NULL)
+
+                UNION ALL
+
+                /* 2. 발주 미연결 (조립) 재고 */
+                SELECT
+                    NULL AS purchase_id, '조립품' AS purchase_status, ' (조립 재고)' AS purchase_no,
+                    pr.part_no AS item_code, pr.product_name,
+                    EXISTS (SELECT 1 FROM bom_items b WHERE b.parent_item_code = pr.part_no) as is_assembly,
+                    0 AS ordered_qty, COUNT(pr.id) AS produced_qty,
+                    SUM(CASE WHEN pr.delivery_id IS NOT NULL THEN 1 ELSE 0 END) AS delivered_qty,
+                    SUM(CASE WHEN pr.consumed_by_product_id IS NOT NULL THEN 1 ELSE 0 END) AS consumed_qty,
+                    SUM(CASE WHEN pr.delivery_id IS NULL AND pr.consumed_by_product_id IS NULL AND pr.reserved_order_id IS NULL THEN 1 ELSE 0 END) AS free_stock_qty,
+                    NULL as next_serial_no,
+                    0 as demand_qty -- 조립 재고는 demand 없음
+                FROM products pr
+                LEFT JOIN product_master pm ON pr.part_no = pm.item_code 
+                                          AND (pm.rev IS NULL OR pm.rev = '')
+                WHERE pr.purchase_id IS NULL AND (pm.item_type = 'SELLABLE' OR pm.item_type IS NULL)
+                GROUP BY pr.part_no, pr.product_name
+                HAVING (produced_qty - delivered_qty - consumed_qty) > 0
+
+                UNION ALL
+
+                /* 3. 수리 완료 재고 */
+                SELECT
+                    NULL AS purchase_id, '수리품' AS purchase_status, ' (수리 재고)' AS purchase_no,
+                    pr.part_no AS item_code, pr.product_name,
+                    EXISTS (SELECT 1 FROM bom_items b WHERE b.parent_item_code = pr.part_no) as is_assembly,
+                    0 AS ordered_qty, COUNT(pr.id) AS produced_qty,
+                    0 AS delivered_qty, 0 AS consumed_qty, 
+                    SUM(CASE WHEN pr.delivery_id IS NULL AND pr.consumed_by_product_id IS NULL AND pr.reserved_order_id IS NULL THEN 1 ELSE 0 END) AS free_stock_qty,
+                    MIN(pr.serial_no) as next_serial_no,
+                    0 as demand_qty -- 수리 재고는 demand 없음
+                FROM products pr
+                WHERE 
+                    pr.delivery_id IS NULL
+                    AND pr.consumed_by_product_id IS NULL
+                    AND (
+                        SELECT TRIM(r.status)
+                        FROM product_repairs r 
+                        WHERE r.product_id = pr.id 
+                        ORDER BY r.receipt_date DESC, r.id DESC 
+                        LIMIT 1
+                    ) LIKE '%%수리완료%%'
+                GROUP BY pr.part_no, pr.product_name
             """
 
-            cur.execute(sql)
-            rows = cur.fetchall()
+            order_clause = self.get_inventory_order_clause()
+            sql += f" ORDER BY {order_clause}"
 
-            # 필터링: 미완료만 보기
+            cur.execute(sql % ())
+
+            rows = cur.fetchall()
+            _pcache = {}
+
             if not self.show_all_inventory:
                 filtered_rows = []
-                for row in rows:
-                    purchase_id, purchase_no, purchase_desc, order_qty, produced_qty, delivered_qty = row
-                    order_qty = order_qty or 0
-                    produced_qty = produced_qty or 0
-                    delivered_qty = delivered_qty or 0
-                    inventory_qty = produced_qty - delivered_qty
-                    is_completed = (
-                                order_qty > 0 and order_qty == produced_qty == delivered_qty and inventory_qty == 0)
-
-                    if not is_completed:
+                for r, row in enumerate(rows):
+                    (purchase_id, purchase_status, *rest) = row
+                    if purchase_id is None:
+                        is_completed_for_filter = False
+                    else:
+                        is_completed_for_filter = is_purchase_completed(purchase_id)
+                    if not is_completed_for_filter:
                         filtered_rows.append(row)
                 rows = filtered_rows
 
             self.inventory_table.setRowCount(len(rows))
             self.inventory_table.setSortingEnabled(False)
+            self.inventory_table.setHorizontalHeaderLabels(
+                ["발주번호", "품목코드", "발주내용(품목)", "발주량", "생산량", "납품완료", "재고수량", "소모량", "할당가능", "상태"]
+            )
 
+            status_col = 9
             for r, row in enumerate(rows):
-                purchase_id, purchase_no, purchase_desc, order_qty, produced_qty, delivered_qty = row
-                order_qty = order_qty or 0
+                (purchase_id, purchase_status, purchase_no,
+                 item_code, product_name, is_assembly, ordered_qty,
+                 produced_qty, delivered_qty, consumed_qty,
+                 free_stock_qty, next_serial_no, demand_qty) = row  # ✅ demand_qty 추가됨
+
+                ordered_qty = ordered_qty or 0
                 produced_qty = produced_qty or 0
                 delivered_qty = delivered_qty or 0
-                inventory_qty = produced_qty - delivered_qty
-                is_completed = (order_qty > 0 and order_qty == produced_qty == delivered_qty and inventory_qty == 0)
+                consumed_qty = consumed_qty or 0
+                free_stock_qty = free_stock_qty or 0
+                demand_qty = demand_qty or 0  # ✅ 주문 요구량
 
-                # 상태 표시 로직 개선
-                if is_completed:
-                    status = "정상 납품 완료"
-                    status_color = "#888888"  # 완료는 회색
+                inventory_qty_raw = produced_qty - delivered_qty - consumed_qty
+                inventory_qty_disp = max(inventory_qty_raw, 0)
+
+                is_repair_stock = (purchase_status == '수리품')
+                is_assembly_stock = (purchase_status == '조립품')
+                is_completed_for_palette = False
+                logical_completed = False
+
+                if purchase_id:
+                    purchase_completed = _pcache.get(purchase_id)
+                    if purchase_completed is None:
+                        manual = (str(purchase_status).strip() == "완료")
+                        _pcache[purchase_id] = manual
+                        purchase_completed = manual
+                    logical_completed = (ordered_qty > 0 and (delivered_qty + consumed_qty) >= ordered_qty)
+                    is_completed_for_palette = purchase_completed or logical_completed
+
+                # --- [상태 텍스트 로직 수정] ---
+                if is_repair_stock:
+                    status_text, status_color = f"수리 재고 {inventory_qty_disp}개", "#006633"
+                elif is_assembly_stock:
+                    status_text, status_color = f"조립 재고 {inventory_qty_disp}개", "#0d6efd"
+                elif delivered_qty > ordered_qty:
+                    status_text, status_color = "납품 초과", "#dc3545"
+                elif purchase_id and _pcache.get(purchase_id) and (produced_qty == 0):
+                    status_text, status_color = "강제 종료", "#6f42c1"
+                elif logical_completed:
+                    status_text, status_color = "납품 완료", "#888888"
+
+                # ✅ [핵심] 생산 부족 판단 기준 변경: 발주량(ordered)이 아니라 주문요구량(demand) 기준
+                elif produced_qty < demand_qty:
+                    shortage = demand_qty - produced_qty
+                    status_text, status_color = f"생산필요 {shortage}개", "#ff7f27"  # 주황색 (주문 대응 필요)
+
                 elif produced_qty == 0:
-                    status = "미생산"
-                    status_color = "#6c757d"
-                elif delivered_qty > produced_qty:
-                    status = "납품 초과"
-                    status_color = "#dc3545"  # 오류는 빨간색
-                elif inventory_qty == 0 and produced_qty > 0:
-                    status = "재고없음 (납품대기)"
-                    status_color = "#007bff"  # 파란색
-                elif inventory_qty > 0:
-                    status = f"재고 {inventory_qty}개"
-                    status_color = "#28a745"  # 정상 재고는 초록색
+                    status_text, status_color = "미생산", "#6c757d"
+                elif produced_qty < ordered_qty:
+                    # 주문 요구량은 채웠지만, 발주량보다는 적은 경우 (여유분 미생산)
+                    status_text, status_color = "생산중 (주문충족)", "#007bff"
+                elif inventory_qty_raw <= 0 and produced_qty == ordered_qty:
+                    status_text, status_color = "재고 없음", "#007bff"
                 else:
-                    status = "확인필요"
-                    status_color = "#ffc107"  # 노란색
+                    status_text, status_color = f"재고 {inventory_qty_disp}개", "#28a745"
 
-                self.inventory_table.setItem(r, 0, QtWidgets.QTableWidgetItem(str(purchase_no or "")))
-                self.inventory_table.setItem(r, 1, QtWidgets.QTableWidgetItem(str(purchase_desc or "")))
-                self.inventory_table.setItem(r, 2,
-                                             QtWidgets.QTableWidgetItem(f"{order_qty or 0} / {produced_qty or 0}"))
-                self.inventory_table.setItem(r, 3, QtWidgets.QTableWidgetItem(str(delivered_qty or 0)))
-                self.inventory_table.setItem(r, 4, QtWidgets.QTableWidgetItem(str(inventory_qty or 0)))
+                # 테이블 세팅
+                item_0 = QtWidgets.QTableWidgetItem(purchase_no or "")
+                item_0.setData(Qt.UserRole, purchase_id)
+                item_0.setData(Qt.UserRole + 1, item_code)
+                item_0.setData(Qt.UserRole + 2, product_name)
+                item_0.setData(Qt.UserRole + 3, next_serial_no)
+                self.inventory_table.setItem(r, 0, item_0)
 
-                status_item = QtWidgets.QTableWidgetItem(status)
-                status_item.setForeground(QtGui.QBrush(QtGui.QColor(status_color)))
-                font = status_item.font()
-                font.setBold(True)
-                status_item.setFont(font)
-                self.inventory_table.setItem(r, 5, status_item)
+                self.inventory_table.setItem(r, 1, QtWidgets.QTableWidgetItem(item_code or ""))
+                display_name = product_name or ""
+                if is_assembly: display_name += " (조립품)"
+                if is_repair_stock: display_name += " (수리품)"
+                self.inventory_table.setItem(r, 2, QtWidgets.QTableWidgetItem(display_name))
 
-                if is_completed:
-                    for col in range(6):
-                        if self.inventory_table.item(r, col):
-                            self.inventory_table.item(r, col).setForeground(QtGui.QBrush(QtGui.QColor("#888888")))
+                self.inventory_table.setItem(r, 3, QtWidgets.QTableWidgetItem(str(ordered_qty)))
+                self.inventory_table.setItem(r, 4, QtWidgets.QTableWidgetItem(str(produced_qty)))
+                self.inventory_table.setItem(r, 5, QtWidgets.QTableWidgetItem(str(delivered_qty)))
+                self.inventory_table.setItem(r, 6, QtWidgets.QTableWidgetItem(str(inventory_qty_disp)))
+                self.inventory_table.setItem(r, 7, QtWidgets.QTableWidgetItem(str(consumed_qty)))
+
+                # 할당가능
+                free_item = QtWidgets.QTableWidgetItem(str(free_stock_qty))
+                free_item.setForeground(QBrush(QColor("#0066cc")))
+                free_item.setFont(sfont := free_item.font())
+                sfont.setBold(True)
+                self.inventory_table.setItem(r, 8, free_item)
+
+                status_item = QtWidgets.QTableWidgetItem(status_text)
+                status_item.setTextAlignment(Qt.AlignCenter)
+                status_item.setFont(sfont)
+                self.inventory_table.setItem(r, status_col, status_item)
+
+                # 색상 적용
+                fg = incomp_fg;
+                bg = incomp_bg
+                if is_repair_stock:
+                    fg, bg = repair_fg, repair_bg
+                elif is_assembly_stock:
+                    fg, bg = incomp_fg, incomp_bg
+                elif is_completed_for_palette:
+                    fg, bg = comp_fg, comp_bg
+
+                st_q = QColor(status_color)
+                for c in range(self.inventory_table.columnCount()):
+                    cell = self.inventory_table.item(r, c)
+                    if not cell: continue
+                    cell.setBackground(QBrush(bg))
+                    if c != status_col and c != 8: cell.setForeground(QBrush(fg))
+
+                status_cell = self.inventory_table.item(r, status_col)
+                if status_cell:
+                    status_cell.setForeground(QBrush(st_q))
+                    status_cell.setBackground(QBrush(bg))
 
             self.inventory_table.setSortingEnabled(True)
-            for i in range(self.table.rowCount()):
-                self.table.setRowHeight(i, 25)
+            with QSignalBlocker(self.inventory_table.horizontalHeader()):
+                self.inventory_table.horizontalHeader().setSortIndicator(
+                    self.current_inventory_sort_column, self.current_inventory_sort_order)
+            for i in range(self.inventory_table.rowCount()):
+                self.inventory_table.setRowHeight(i, 25)
 
             conn.close()
 
         except Exception as e:
             print(f"재고 현황 로드 중 오류: {e}")
-            import traceback
+            import traceback;
             traceback.print_exc()
             self.inventory_table.setRowCount(0)
+
+
+    def load_due_list(self, only_future: bool = True):
+        """주문 목록 로드 (분할 납기 반영)"""
+        self.only_future = only_future
+        try:
+            from PySide6.QtGui import QBrush, QColor
+
+            # ✅ 1. 설정에서 사용자 지정 색상 불러오기
+            comp_fg = self.settings.value("colors/order_completed_fg", "#000000")
+            comp_bg = self.settings.value("colors/order_completed_bg", "#C8E6C9")
+            incomp_fg = self.settings.value("colors/order_incomplete_fg", "#000000")
+            incomp_bg = self.settings.value("colors/order_incomplete_bg", "#FFFFFF")
+
+            conn = get_conn()
+            cur = conn.cursor()
+
+            sql = """
+                SELECT 
+                    o.id, o.order_dt, o.order_no, o.req_due, o.final_due,
+                    o.oa_sent, o.invoice_done, COUNT(oi.id) as item_count, SUM(oi.qty) as total_qty,
+                    GROUP_CONCAT(oi.item_code, ', ') as item_codes, GROUP_CONCAT(oi.rev, ', ') as revs,
+                    GROUP_CONCAT(oi.product_name, ' | ') as product_names,
+                    oa.total_cents / 100.0 as amount_jpy,
+                    (SELECT MAX(s.due_date) FROM order_shipments s JOIN order_items oi_s ON s.order_item_id = oi_s.id WHERE oi_s.order_id = o.id) as split_final_due,
+                    (SELECT COUNT(s.id) FROM order_shipments s JOIN order_items oi_s ON s.order_item_id = oi_s.id WHERE oi_s.order_id = o.id) as split_count
+                FROM orders o
+                LEFT JOIN order_items oi ON o.id = oi.order_id
+                LEFT JOIN order_amounts oa ON o.id = oa.order_id
+            """
+
+            conds = []
+            if not self.show_all_billed:
+                conds.append("COALESCE(o.invoice_done, 0) = 0")
+
+            if conds:
+                sql += " WHERE " + " AND ".join(conds)
+
+            sql += " GROUP BY o.id"
+            order_clause = self.get_order_clause()
+            sql += f" ORDER BY {order_clause}"
+
+            cur.execute(sql)
+            rows = cur.fetchall()
+
+            self.order_data = rows
+            self.table.setRowCount(len(rows))
+            self.table.setSortingEnabled(False)
+
+            for r, row in enumerate(rows):
+                (order_id, order_dt, order_no, req_due, final_due,
+                 oa_sent, invoice_done, item_count, total_qty, item_codes, revs,
+                 product_names, amount_jpy, split_final_due, split_count) = row
+
+                # Col 0: 주문일 + order_id 저장 (가운데 정렬)
+                item_0 = QtWidgets.QTableWidgetItem(str(order_dt or ""))
+                item_0.setData(Qt.UserRole, order_id)
+                item_0.setTextAlignment(Qt.AlignCenter)  # ✅ 가운데 정렬
+                self.table.setItem(r, 0, item_0)
+
+                # Col 1: 주문번호 (왼쪽 정렬)
+                item_1 = QtWidgets.QTableWidgetItem(str(order_no or ""))
+                item_1.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)  # ✅ 왼쪽 정렬
+                self.table.setItem(r, 1, item_1)
+
+                # Col 2: 품목코드 (왼쪽 정렬)
+                item_2 = QtWidgets.QTableWidgetItem(str(item_codes or ""))
+                item_2.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)  # ✅ 왼쪽 정렬
+                self.table.setItem(r, 2, item_2)
+
+                # Col 3: Rev (가운데 정렬)
+                item_3 = QtWidgets.QTableWidgetItem(str(revs or ""))
+                item_3.setTextAlignment(Qt.AlignCenter)  # ✅ 가운데 정렬
+                self.table.setItem(r, 3, item_3)
+
+                # Col 4: 품목/수량 (가운데 정렬)
+                item_4 = QtWidgets.QTableWidgetItem(f"{item_count}종 / {total_qty or 0}개")
+                item_4.setTextAlignment(Qt.AlignCenter)  # ✅ 가운데 정렬
+                self.table.setItem(r, 4, item_4)
+
+                # Col 5: 제품명 (왼쪽 정렬)
+                display_names = product_names or ""
+                if len(display_names) > 80:
+                    display_names = display_names[:77] + "..."
+                item_5 = QtWidgets.QTableWidgetItem(display_names)
+                item_5.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)  # ✅ 왼쪽 정렬
+                self.table.setItem(r, 5, item_5)
+
+                # Col 6: 주문금액(엔) (오른쪽 정렬)
+                item_6 = QtWidgets.QTableWidgetItem(format_money(amount_jpy))
+                item_6.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)  # ✅ 오른쪽 정렬
+                self.table.setItem(r, 6, item_6)
+
+                # Col 7: 최초납기 (가운데 정렬)
+                item_7 = QtWidgets.QTableWidgetItem(str(req_due or ""))
+                item_7.setTextAlignment(Qt.AlignCenter)  # ✅ 가운데 정렬
+                self.table.setItem(r, 7, item_7)
+
+                # Col 8: 최종납기 (가운데 정렬)
+                date_to_display = split_final_due or final_due or req_due or ""
+                suffix = ""
+
+                # 1. 분할 납기인지 확인 (분할 납기 항목이 2개 이상일 경우)
+                if split_count and split_count > 1:
+                    suffix = " (분할)"
+                # 2. 분할 납기가 아닐 때, '납기 일정 관리'를 통해 날짜가 변경되었는지 확인
+                #    (분할 납기 테이블의 날짜(split_final_due)가 최초납기(req_due)와 다를 경우)
+                elif split_final_due and req_due and split_final_due != req_due:
+                    suffix = " (변경)"
+                # 3. (구 방식 데이터 호환용) 최종납기 필드가 직접 수정된 경우
+                elif final_due and req_due and final_due != req_due:
+                    suffix = " (변경)"
+
+                display_text = f"{date_to_display}{suffix}"
+
+                item_8 = QtWidgets.QTableWidgetItem(display_text)
+                item_8.setTextAlignment(Qt.AlignCenter)
+                self.table.setItem(r, 8, item_8)
+
+                # Col 9: OA 발송 (Checkbox - 이미 중앙 정렬됨)
+                oa_checkbox = QtWidgets.QCheckBox()
+                oa_checkbox.setChecked(bool(oa_sent))
+                oa_checkbox.setStyleSheet("QCheckBox { margin-left: 20px; }")
+                oa_checkbox.stateChanged.connect(
+                    lambda state, oid=order_id: self.update_oa_status(oid, state)
+                )
+                oa_widget = QtWidgets.QWidget()
+                oa_layout = QtWidgets.QHBoxLayout(oa_widget)
+                oa_layout.addWidget(oa_checkbox)
+                oa_layout.setAlignment(Qt.AlignCenter)
+                oa_layout.setContentsMargins(0, 0, 0, 0)
+                self.table.setCellWidget(r, 9, oa_widget)
+
+                # Col 10: 청구 완료 (Checkbox - 이미 중앙 정렬됨)
+                invoice_checkbox = QtWidgets.QCheckBox()
+                with QSignalBlocker(invoice_checkbox):  # 🔸초기 세팅 시 신호 차단
+                    invoice_checkbox.setChecked(bool(invoice_done))
+                invoice_checkbox.setStyleSheet("QCheckBox { margin-left: 20px; }")
+                invoice_checkbox.stateChanged.connect(
+                    lambda state, oid=order_id: self.update_invoice_status(oid, state)
+                )
+                invoice_widget = QtWidgets.QWidget()
+                invoice_layout = QtWidgets.QHBoxLayout(invoice_widget)
+                invoice_layout.addWidget(invoice_checkbox)
+                invoice_layout.setAlignment(Qt.AlignCenter)
+                invoice_layout.setContentsMargins(0, 0, 0, 0)
+                self.table.setCellWidget(r, 10, invoice_widget)
+
+                # ✅ 2. invoice_done 상태에 따라 적용할 색상 결정
+                fg_color = QColor(comp_fg if invoice_done else incomp_fg)
+                bg_color = QColor(comp_bg if invoice_done else incomp_bg)
+
+                # ✅ 3. 결정된 색상을 모든 컬럼의 글자색으로 적용
+                for col in range(self.table.columnCount()):
+                    # CellWidget이 아닌 일반 아이템에만 색상 적용
+                    item = self.table.item(r, col)
+                    if item:
+                        item.setForeground(QBrush(fg_color))
+                        item.setBackground(QBrush(bg_color))
+
+            # ✅ [수정] QSignalBlocker를 사용하여 setSortIndicator가
+            #    on_order_sort_changed를 다시 호출하지 않도록 합니다. (무한 루프 방지)
+            self.table.setSortingEnabled(True)
+
+            # 2. 정렬 화살표 표시 (시그널 차단으로 무한 루프 방지)
+            with QSignalBlocker(self.table.horizontalHeader()):
+                self.table.horizontalHeader().setSortIndicator(
+                    self.current_sort_column,
+                    self.current_sort_order
+                )
+
+            # 3. 행 높이 설정
+            for i in range(self.table.rowCount()):
+                self.table.setRowHeight(i, 25)
+
+        except Exception as e:
+            print(f"주문 목록 로드 중 오류: {e}")
+            import traceback
+            traceback.print_exc()
+            self.order_data = []
+            self.table.setRowCount(0)
+        finally:
+            if 'conn' in locals() and conn:
+                conn.close()
+
+    # ✅ [핵심] 추가된 헬퍼 및 핸들러 함수 4개
+    def _select_related_rows(self, table: QtWidgets.QTableWidget, ids_to_select: list):
+        """
+        다른 테이블에서 관련 ID 목록을 받아, 해당 테이블에서 일치하는 모든 행을 선택합니다.
+        """
+        # 1. 시그널을 차단하여 무한 루프 방지
+        table.blockSignals(True)
+        # 2. 기존 선택 해제
+        table.clearSelection()
+
+        id_set = set(ids_to_select)
+        if not id_set:
+            table.blockSignals(False)
+            return
+
+        first_found_item = None
+
+        # 3. 테이블을 순회하며 일치하는 *모든* ID 찾기
+        for row in range(table.rowCount()):
+            item = table.item(row, 0)
+            if not item:
+                continue
+
+            row_id = item.data(Qt.UserRole)
+            if row_id in id_set:
+                # 4. [수정] 'selectRow' 대신 'setSelected'를 사용해
+                #    기존 선택에 행을 '추가'합니다.
+                table.setRangeSelected(
+                    QtWidgets.QTableWidgetSelectionRange(row, 0, row, table.columnCount() - 1),
+                    True  # True: 선택 영역에 추가 (False: 선택 해제)
+                )
+
+                # 5. 첫 번째로 찾은 항목을 저장 (스크롤용)
+                if first_found_item is None:
+                    first_found_item = item
+
+        # 6. 첫 번째로 찾은 항목으로 스크롤 (반복문 종료 후 1회 실행)
+        if first_found_item:
+            table.scrollToItem(first_found_item, QtWidgets.QAbstractItemView.ScrollHint.PositionAtCenter)
+
+        # 7. 시그널 차단 해제
+        table.blockSignals(False)
+
+    def on_order_selected(self):
+        """주문 테이블에서 항목 선택 시 호출될 핸들러 (다중 선택 지원)"""
+        if self.is_selecting:  # 프로그램에 의한 선택이면 무시
+            return
+
+        # 1. 선택된 모든 '행'의 인덱스를 집계 (중복 제거)
+        selected_rows = set(item.row() for item in self.table.selectedItems())
+
+        if not selected_rows:
+            # 2. 선택이 해제된 경우, 다른 테이블의 선택도 해제
+            self.is_selecting = True
+            self._select_related_rows(self.purchase_widget.table, [])
+            self._select_related_rows(self.delivery_widget.table, [])
+            self.is_selecting = False
+            return
+
+        # 3. 선택된 모든 행에서 고유한 Order ID를 수집
+        source_order_ids = set()
+        for row in selected_rows:
+            item = self.table.item(row, 0)
+            if item:
+                source_order_ids.add(item.data(Qt.UserRole))
+
+        if not source_order_ids:
+            return
+
+        # 4. 수집된 *모든* ID를 사용하여 관련 ID를 한 번에 조회
+        placeholders = ', '.join('?' for _ in source_order_ids)
+        params = tuple(source_order_ids)
+
+        purchase_ids = [row[0] for row in query_all(
+            f"SELECT DISTINCT purchase_id FROM purchase_order_links WHERE order_id IN ({placeholders})", params
+        )]
+        delivery_ids = [row[0] for row in query_all(
+            f"SELECT DISTINCT delivery_id FROM delivery_order_links WHERE order_id IN ({placeholders})", params
+        )]
+
+        # 5. 다른 테이블 선택 실행
+        self.is_selecting = True
+        self._select_related_rows(self.purchase_widget.table, purchase_ids)
+        self._select_related_rows(self.delivery_widget.table, delivery_ids)
+        self.is_selecting = False
+
+    def on_purchase_selected(self):
+        """발주 테이블에서 항목 선택 시 호출될 핸들러 (다중 선택 지원)"""
+        if self.is_selecting:
+            return
+
+        selected_rows = set(item.row() for item in self.purchase_widget.table.selectedItems())
+
+        if not selected_rows:
+            self.is_selecting = True
+            self._select_related_rows(self.table, [])
+            self._select_related_rows(self.delivery_widget.table, [])
+            self.is_selecting = False
+            return
+
+        source_purchase_ids = set()
+        for row in selected_rows:
+            item = self.purchase_widget.table.item(row, 0)
+            if item:
+                source_purchase_ids.add(item.data(Qt.UserRole))
+
+        if not source_purchase_ids:
+            return
+
+        placeholders = ', '.join('?' for _ in source_purchase_ids)
+        params = tuple(source_purchase_ids)
+
+        order_ids = [row[0] for row in query_all(
+            f"SELECT DISTINCT order_id FROM purchase_order_links WHERE purchase_id IN ({placeholders})", params
+        )]
+        delivery_ids = [row[0] for row in query_all(
+            f"SELECT DISTINCT delivery_id FROM delivery_purchase_links WHERE purchase_id IN ({placeholders})", params
+        )]
+
+        self.is_selecting = True
+        self._select_related_rows(self.table, order_ids)
+        self._select_related_rows(self.delivery_widget.table, delivery_ids)
+        self.is_selecting = False
+
+    def on_delivery_selected(self):
+        """납품 테이블에서 항목 선택 시 호출될 핸들러 (다중 선택 지원)"""
+        if self.is_selecting:
+            return
+
+        selected_rows = set(item.row() for item in self.delivery_widget.table.selectedItems())
+
+        if not selected_rows:
+            self.is_selecting = True
+            self._select_related_rows(self.table, [])
+            self._select_related_rows(self.purchase_widget.table, [])
+            self.is_selecting = False
+            return
+
+        source_delivery_ids = set()
+        for row in selected_rows:
+            item = self.delivery_widget.table.item(row, 0)
+            if item:
+                source_delivery_ids.add(item.data(Qt.UserRole))
+
+        if not source_delivery_ids:
+            return
+
+        placeholders = ', '.join('?' for _ in source_delivery_ids)
+        params = tuple(source_delivery_ids)
+
+        order_ids = [row[0] for row in query_all(
+            f"SELECT DISTINCT order_id FROM delivery_order_links WHERE delivery_id IN ({placeholders})", params
+        )]
+        purchase_ids = [row[0] for row in query_all(
+            f"SELECT DISTINCT purchase_id FROM delivery_purchase_links WHERE delivery_id IN ({placeholders})", params
+        )]
+
+        self.is_selecting = True
+        self._select_related_rows(self.table, order_ids)
+        self._select_related_rows(self.purchase_widget.table, purchase_ids)
+        self.is_selecting = False
+
+    def get_inventory_order_clause(self):
+        """(새 함수) 재고 현황 테이블의 정렬 기준을 SQL ORDER BY 절로 변환"""
+        # [참고] SQL은 9개 컬럼을 반환하지만, UI 테이블은 8개임
+        column_names = [
+            "purchase_no",      # 0 ✅ (p. 및 pi. 접두사 제거 - UNION 호환)
+            "item_code",        # 1 ✅
+            "product_name",     # 2 ✅
+            "ordered_qty",      # 3
+            "produced_qty",     # 4
+            "delivered_qty",    # 5
+            "(produced_qty - delivered_qty - consumed_qty)", # 6 (재고수량)
+            "consumed_qty",     # 7 (소모량) ✅ [추가]
+            "linked_order_qty", # 8 (할당량) ✅ [변경]
+            "NULL"              # 9 (상태) ✅ [변경]
+        ]
+
+        if self.current_inventory_sort_column == 7:  # '상태' 컬럼은 SQL 정렬 불가
+            # ✅ [수정] 발주일 대신 발주번호로 기본 정렬
+            column = "purchase_no"
+            direction = "DESC" if self.current_inventory_sort_order == Qt.DescendingOrder else "ASC"
+        elif 0 <= self.current_inventory_sort_column < len(column_names):
+            column = column_names[self.current_inventory_sort_column]
+            direction = "DESC" if self.current_inventory_sort_order == Qt.DescendingOrder else "ASC"
+        else:  # 기본값
+            column = "purchase_no"
+            direction = "DESC"
+
+        # 2차 정렬 기준으로 발주번호, 품목코드 사용
+        return f"{column} {direction}, purchase_no {direction}, item_code {direction}"
+
+    def on_inventory_sort_changed(self, column_index, order):
+        """(새 함수) 재고 현황 테이블 헤더의 정렬 표시기가 변경될 때 호출됩니다."""
+
+        if self.current_inventory_sort_column == column_index and self.current_inventory_sort_order == order:
+            return
+
+        if column_index == 9:  # '상태' 컬럼은 정렬 비활성화
+            # 현재 정렬 상태를 유지하고, 화살표만 이전 상태로 되돌림
+            with QSignalBlocker(self.inventory_table.horizontalHeader()):
+                self.inventory_table.horizontalHeader().setSortIndicator(
+                    self.current_inventory_sort_column,
+                    self.current_inventory_sort_order
+                )
+            return
+
+        self.current_inventory_sort_column = column_index
+        self.current_inventory_sort_order = order
+
+        self.settings.setValue("inventory_table/sort_column", self.current_inventory_sort_column)
+        self.settings.setValue("inventory_table/sort_order", self.current_inventory_sort_order)
+
+        self.load_inventory_data()
+
+    def show_inventory_context_menu(self, position):
+        """(새 함수) 재고 현황 테이블 우클릭 메뉴"""
+        row = self.inventory_table.rowAt(position.y())
+        if row < 0:
+            return
+
+        # ✅ [수정] 메뉴를 먼저 생성
+        menu = QtWidgets.QMenu(self)
+        action = menu.addAction("➡️ 이 발주로 생산하기")
+
+        status_item = self.inventory_table.item(row, 9)  # 9번 컬럼 (상태)
+        is_producible = False
+
+        if status_item:
+            status_text = status_item.text()
+            # '미생산' 또는 '생산 n개 부족' 상태일 때만 '생산하기' 활성화
+            if status_text == "미생산" or "부족" in status_text or "생산필요" in status_text:
+                is_producible = True
+
+        if is_producible:
+            # ✅ 활성화 상태면, 기능 연결
+            action.triggered.connect(self.start_production_from_inventory)
+        else:
+            # ✅ 비활성화 상태면, 메뉴를 끄고 툴팁 표시
+            action.setEnabled(False)
+            action.setToolTip("'미생산' 또는 '생산 부족' 상태인 항목만 생산할 수 있습니다.")
+
+        # ✅ [수정] 메뉴를 항상 표시
+        menu.exec_(self.inventory_table.mapToGlobal(position))
+
+    def start_production_from_inventory(self):
+        """(새 함수) 재고 현황 메뉴에서 '생산하기'를 실행"""
+        current_row = self.inventory_table.currentRow()
+        if current_row < 0:
+            return
+
+        item_col_0 = self.inventory_table.item(current_row, 0)  # 0번 컬럼
+        if not item_col_0:
+            return
+
+        purchase_id = item_col_0.data(Qt.UserRole)
+        item_code = item_col_0.data(Qt.UserRole + 1)
+        product_name = item_col_0.data(Qt.UserRole + 2)
+        next_serial_no = item_col_0.data(Qt.UserRole + 3)  # ✅ [추가]
+
+        if not purchase_id or not item_code:
+            QtWidgets.QMessageBox.warning(self, "오류", "생산에 필요한 발주 ID 또는 품목코드를 찾을 수 없습니다.")
+            return
+
+        # 1. '제품 생산' 탭의 인덱스를 찾아 강제 이동
+        for i in range(self.main_tabs.count()):
+            if self.main_tabs.tabText(i) == "제품 생산":
+                self.main_tabs.setCurrentIndex(i)
+                break
+
+        # 2. '제품 생산' 탭의 add_product_from_inventory 함수 호출
+        if hasattr(self, 'product_production_widget'):
+            self.product_production_widget.add_product_from_inventory(
+                purchase_id, item_code, product_name, next_serial_no  # ✅ [수정]
+            )
+        else:
+            QtWidgets.QMessageBox.warning(self, "오류", "제품 생산 위젯을 찾을 수 없습니다.")
+
+    def run_outlook_sync_future(self):
+        """오늘 이후 일정만 동기화"""
+        self.statusBar().showMessage("미래 일정 동기화 중...")
+        self.sync_worker = OutlookSyncWorker(mode="future")
+        self.sync_worker.sync_finished.connect(self.on_sync_finished)
+        self.sync_worker.start()
+
+    def run_outlook_sync_all(self):
+        """전체 일정 동기화"""
+        self.statusBar().showMessage("전체 일정 동기화 중...")
+        self.sync_worker = OutlookSyncWorker(mode="all")
+        self.sync_worker.sync_finished.connect(self.on_sync_finished)
+        self.sync_worker.start()
+
+    def run_outlook_delete_all(self):
+        """모든 일정 삭제 (주의 필요)"""
+        reply = QtWidgets.QMessageBox.warning(
+            self, "전체 삭제 경고",
+            "정말로 Outlook의 '모든' 작업(ToDo)을 삭제하시겠습니까?\n\n이 작업은 되돌릴 수 없으며, 완료 여부와 상관없이 싹 지워집니다.",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No
+        )
+        if reply == QtWidgets.QMessageBox.Yes:
+            self.statusBar().showMessage("전체 삭제 중...")
+            self.sync_worker = OutlookSyncWorker(mode="delete_all")
+            self.sync_worker.sync_finished.connect(self.on_sync_finished)
+            self.sync_worker.start()
+
+
+    def run_outlook_cleanup(self):
+        """Outlook 완료된 일정 삭제 실행"""
+        reply = QtWidgets.QMessageBox.question(
+            self, "일괄 삭제 확인",
+            "Outlook에서 '완료' 상태인 모든 작업을 삭제하시겠습니까?\n(이 작업은 되돌릴 수 없습니다.)",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No
+        )
+
+        if reply == QtWidgets.QMessageBox.Yes:
+            self.statusBar().showMessage("완료된 일정 삭제 중...")
+            self.sync_worker = OutlookSyncWorker(mode="cleanup")
+            self.sync_worker.sync_finished.connect(self.on_sync_finished)
+            self.sync_worker.start()
+
+    def on_sync_finished(self, msg):
+        """Outlook 동기화 완료 핸들러"""
+        self.statusBar().showMessage(msg, 5000)
+        QtWidgets.QMessageBox.information(self, "완료", msg)

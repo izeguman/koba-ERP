@@ -1,13 +1,17 @@
 # app/ui/purchase_widget.py
 from PySide6 import QtWidgets, QtCore
 from PySide6.QtWidgets import QHeaderView
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QSignalBlocker, QSettings
 from datetime import datetime
-from ..db import (get_conn, get_available_orders, get_linked_orders,
-                  get_orders_for_purchase_display, update_product_master_purchase_price,
-                  query_all, create_purchase_with_items, get_purchase_with_items)
+from ..db import (get_conn,
+                  get_linked_orders, get_orders_for_purchase_display,
+                  update_product_master_purchase_price, query_all,
+                  create_purchase_with_items, get_purchase_with_items,
+                  get_next_purchase_number, update_purchase_with_items)
 from .autocomplete_widgets import AutoCompleteLineEdit
 from .money_lineedit import MoneyLineEdit
+from .utils import parse_due_text, apply_table_resize_policy
+from ..db import is_purchase_completed, calculate_fifo_allocation_margins
 
 
 def format_money(val: float | None) -> str:
@@ -19,99 +23,58 @@ def format_money(val: float | None) -> str:
         return str(val)
 
 
-def parse_due_text(text: str) -> str | None:
-    s = (text or "").strip()
-    if not s:
-        return None
-    fmts = [
-        "%Y-%m-%d", "%Y/%m/%d",
-        "%y-%m-%d", "%y/%m/%d",
-        "%d-%b-%y", "%d-%b-%Y",
-        "%d/%m/%Y", "%m/%d/%Y",
-    ]
-    for f in fmts:
-        try:
-            dt = datetime.strptime(s, f)
-            if dt.year < 2000:
-                dt = dt.replace(year=dt.year + 2000)
-            return dt.strftime("%Y-%m-%d")
-        except Exception:
-            continue
-    return None
-
-
-def get_available_orders_for_purchase():
-    """발주와 연결할 수 있는 주문 목록 (OA 발송됨, 청구 미완료)"""
+def get_available_orders_for_purchase(purchase_id_to_include=None):
+    """
+    발주와 연결할 수 있는 주문 목록을 반환합니다.
+    1. (기본) OA 발송됨, 청구 미완료된 모든 주문
+    2. (수정 시) + 현재 발주에 이미 연결된 주문 (청구 완료 여부와 상관없이)
+    """
     sql = """
-        SELECT o.id, o.order_no, GROUP_CONCAT(oi.product_name, ' | ') as desc,
-               SUM(oi.qty) as qty, COALESCE(o.final_due, o.req_due) as due_date
+        SELECT
+            o.id,
+            o.order_no,
+            GROUP_CONCAT(oi.product_name, ' | ') as order_desc,
+            SUM(oi.qty) as total_ordered_qty,
+
+            /* [수정] 분할 납기를 포함한 '진짜' 최종 납기일 조회 */
+            COALESCE(
+                (SELECT MAX(s.due_date) 
+                 FROM order_shipments s 
+                 JOIN order_items oi_s ON s.order_item_id = oi_s.id 
+                 WHERE oi_s.order_id = o.id), 
+                o.final_due, 
+                o.req_due
+            ) as due_date
+
         FROM orders o
         LEFT JOIN order_items oi ON o.id = oi.order_id
-        WHERE o.order_no IS NOT NULL 
-        AND COALESCE(o.oa_sent, 0) = 1
-        AND COALESCE(o.invoice_done, 0) = 0
-        GROUP BY o.id
-        ORDER BY o.order_no
     """
-    return query_all(sql)
 
-def is_purchase_completed(purchase_id: int) -> bool:
-    """발주가 완료되었는지 확인"""
-    conn = get_conn()
-    cur = conn.cursor()
+    # --- [수정] WHERE 절 로직 (괄호 오류 수정) ---
+    # 1. 기본 조건 (미청구 + OA 발송)
+    where_clause = """
+        WHERE (
+            o.order_no IS NOT NULL
+            AND COALESCE(o.oa_sent, 0) = 1
+            AND COALESCE(o.invoice_done, 0) = 0
+        )
+    """
+    params = []
 
-    # ✅ 먼저 완료 상태 체크
-    cur.execute("SELECT status FROM purchases WHERE id = ?", (purchase_id,))
-    result = cur.fetchone()
-    if result and result[0] == '완료':
-        conn.close()
-        return True
+    if purchase_id_to_include:
+        # 2. 수정 모드일 때 (OR 조건 추가)
+        where_clause += """
+            OR (
+                o.id IN (SELECT order_id FROM purchase_order_links WHERE purchase_id = ?)
+            )
+        """
+        params.append(purchase_id_to_include)
 
-    # 연결된 주문들이 모두 청구 완료되었는지 확인
-    cur.execute("""
-        SELECT COUNT(*) as total_orders,
-               SUM(CASE WHEN COALESCE(o.invoice_done, 0) = 1 THEN 1 ELSE 0 END) as completed_orders
-        FROM purchase_order_links pol
-        JOIN orders o ON pol.order_id = o.id
-        WHERE pol.purchase_id = ?
-    """, (purchase_id,))
+    # 3. SQL 조합
+    sql += where_clause
+    sql += " GROUP BY o.id ORDER BY due_date ASC, o.order_no ASC"
 
-    result = cur.fetchone()
-    # 연결된 주문이 하나도 없으면 이 조건은 무시
-    if result and result[0] > 0:
-        total_orders, completed_orders = result
-        if completed_orders != total_orders:
-            conn.close()
-            return False
-
-    # ✅ 수정된 SQL 쿼리: 발주량 = 생산량 = 납품량 확인
-    cur.execute("""
-        SELECT
-            SUM(pi.qty) as order_qty,
-            (SELECT COUNT(*) FROM products pr WHERE pr.purchase_id = p.id) as produced_qty,
-            (SELECT COALESCE(SUM(di.qty), 0)
-             FROM delivery_items di
-             JOIN delivery_purchase_links dpl ON di.delivery_id = dpl.delivery_id
-             WHERE dpl.purchase_id = p.id) as delivered_qty
-        FROM purchases p
-        LEFT JOIN purchase_items pi ON p.id = pi.purchase_id
-        WHERE p.id = ?
-        GROUP BY p.id
-    """, (purchase_id,))
-
-    result = cur.fetchone()
-    conn.close()
-
-    if not result:
-        return False
-
-    order_qty, produced_qty, delivered_qty = result
-    order_qty = order_qty or 0
-    produced_qty = produced_qty or 0
-    delivered_qty = delivered_qty or 0
-
-    # 발주량이 있고, 모든 수량이 일치할 때만 완료로 간주
-    return order_qty > 0 and order_qty == produced_qty == delivered_qty
+    return query_all(sql, tuple(params))
 
 
 class PurchaseWidget(QtWidgets.QWidget):
@@ -119,9 +82,24 @@ class PurchaseWidget(QtWidgets.QWidget):
     def __init__(self, parent=None, settings=None):
         super().__init__(parent)
         self.settings = settings
-        self.show_all = False
+        self.active_purchase_dialogs = []  # 모달리스 다이얼로그 추적용
+
+        # ✅ 저장된 설정 불러오기
+        if self.settings:
+            self.show_all = self.settings.value("filters/purchases_show_all", False, type=bool)
+        else:
+            self.show_all = False
+
         self.setup_ui()
+
+        # ✅ 저장된 정렬 상태 불러오기 (기본값: 0-발주일, 1-내림차순)
+        self.current_sort_column = self.settings.value("purchase_table/sort_column", 0, type=int)
+        # QSettings는 Qt Enum을 직접 처리할 수 있으므로 type=int를 제거합니다.
+        sort_order_val = self.settings.value("purchase_table/sort_order", Qt.DescendingOrder)
+        self.current_sort_order = Qt.SortOrder(sort_order_val)
+
         self.load_purchase_list()
+
 
     def setup_ui(self):
         """✅ 발주 목록 UI 구성"""
@@ -131,10 +109,9 @@ class PurchaseWidget(QtWidgets.QWidget):
         title_label = QtWidgets.QLabel("발주 정보")
         title_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #333;")
 
-        # 필터 버튼
         self.btn_show_all = QtWidgets.QPushButton("미완료만")
         self.btn_show_all.setCheckable(True)
-        self.btn_show_all.setChecked(False)
+        self.btn_show_all.setChecked(self.show_all)  # ✅ 저장된 값으로 설정
         self.btn_show_all.toggled.connect(self.toggle_show_all)
 
         self.btn_new_purchase = QtWidgets.QPushButton("새 발주")
@@ -149,14 +126,16 @@ class PurchaseWidget(QtWidgets.QWidget):
         title_layout.addWidget(self.btn_refresh_purchase)
         title_layout.addWidget(self.btn_show_all)
 
-        self.table = QtWidgets.QTableWidget(0, 7)
+        # ✅ 컬럼 개수 7개 -> 8개로 변경
+        self.table = QtWidgets.QTableWidget(0, 8)
+        # ✅ 헤더에 '총수량' 추가
         self.table.setHorizontalHeaderLabels(
-            ["발주일", "발주번호", "품목수", "발주내용", "발주금액(원)", "연결주문", "완료여부"]
+            ["발주일", "발주번호", "총수량", "품목수", "발주내용", "발주금액(원)", "연결주문", "완료여부"]
         )
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.table.setAlternatingRowColors(True)
-        self.table.setSortingEnabled(True)
+        self.table.setSortingEnabled(False) # ✅ [수정] Qt 기본 정렬 비활성화
 
         self.table.verticalHeader().setDefaultSectionSize(25)
         self.table.setShowGrid(True)
@@ -169,23 +148,29 @@ class PurchaseWidget(QtWidgets.QWidget):
         for col in range(self.table.columnCount()):
             header.setSectionResizeMode(col, QHeaderView.Interactive)
 
-        self.table.setColumnWidth(0, 100)
-        self.table.setColumnWidth(1, 120)
-        self.table.setColumnWidth(2, 70)
-        self.table.setColumnWidth(3, 300)
-        self.table.setColumnWidth(4, 120)
-        self.table.setColumnWidth(5, 150)
-        self.table.setColumnWidth(6, 80)  # 완료여부 컬럼
+        # ✅ 컬럼 폭 설정 수정 (총수량 추가 및 인덱스 조정)
+        self.table.setColumnWidth(0, 90)  # 발주일
+        self.table.setColumnWidth(1, 80)  # 발주번호
+        self.table.setColumnWidth(2, 70)  # 총수량 (새로 추가)
+        self.table.setColumnWidth(3, 70)  # 품목수
+        self.table.setColumnWidth(4, 600)  # 발주내용
+        self.table.setColumnWidth(5, 120)  # 발주금액(원)
+        self.table.setColumnWidth(6, 350)  # 연결주문
+        self.table.setColumnWidth(7, 80)  # 완료여부
 
         if self.settings:
             self.restore_column_widths()
 
         header.sectionResized.connect(self.save_column_widths)
+        # ✅ [추가] 헤더 클릭 시 SQL 정렬을 수행하도록 시그널 연결
+        header.sortIndicatorChanged.connect(self.on_sort_indicator_changed)
+        # ✅ [추가] 정렬 화살표를 항상 표시하도록 설정
+        header.setSortIndicatorShown(True)
 
         layout.addLayout(title_layout)
         layout.addWidget(self.table)
 
-        self.purchase_data = []
+        apply_table_resize_policy(self.table)
 
     def toggle_show_all(self, checked: bool):
         self.show_all = checked
@@ -251,40 +236,74 @@ class PurchaseWidget(QtWidgets.QWidget):
         finally:
             conn.close()
 
-    # app/ui/purchase_widget.py의 load_purchase_list() 메서드 수정
 
     def load_purchase_list(self):
         """발주 목록 로드"""
         try:
+            from PySide6.QtGui import QBrush, QColor
+
+            # ✅ 1. 설정에서 발주 관련 사용자 지정 색상 불러오기
+            comp_fg = self.settings.value("colors/purchase_completed_fg", "#000000")
+            comp_bg = self.settings.value("colors/purchase_completed_bg", "#BBDEFB")
+            incomp_fg = self.settings.value("colors/purchase_incomplete_fg", "#000000")
+            incomp_bg = self.settings.value("colors/purchase_incomplete_bg", "#FFFFFF")
+
             conn = get_conn()
             cur = conn.cursor()
 
+            # ✅ [수정] 툴팁에 표시할 상세 정보(생산량, 납품량, 소모량, 할당량, S/N)를 함께 조회하도록 쿼리 확장
             sql = """
                 SELECT 
                     p.id,
                     p.purchase_dt,
                     p.purchase_no,
                     p.status,
+                    SUM(pi.qty) as total_qty,
                     COUNT(pi.id) as item_count,
                     GROUP_CONCAT(pi.product_name, ' | ') as product_names,
                     CASE 
                         WHEN p.actual_amount > 0 THEN p.actual_amount / 100.0
                         ELSE SUM(pi.qty * pi.unit_price_cents) / 100.0
-                    END as amount_krw
+                    END as amount_krw,
+
+                    -- [추가] 재고 및 할당 여유 계산을 위한 서브쿼리
+                    (SELECT COUNT(*) FROM products pr WHERE pr.purchase_id = p.id) as produced_qty,
+                    (SELECT COUNT(*) FROM products pr WHERE pr.purchase_id = p.id AND pr.delivery_id IS NOT NULL) as delivered_qty,
+                    (SELECT COUNT(*) FROM products pr WHERE pr.purchase_id = p.id AND pr.consumed_by_product_id IS NOT NULL) as consumed_qty,
+
+                    -- 연결된 주문의 할당량 (이 발주에 포함된 품목만 집계)
+                    (SELECT COALESCE(SUM(oi.qty), 0)
+                     FROM order_items oi
+                     JOIN purchase_order_links pol ON oi.order_id = pol.order_id
+                     WHERE pol.purchase_id = p.id
+                     AND oi.item_code IN (SELECT pi_sub.item_code FROM purchase_items pi_sub WHERE pi_sub.purchase_id = p.id)
+                    ) as linked_order_qty,
+
+                    -- 가장 빠른 재고 S/N
+                    (SELECT pr.serial_no FROM products pr
+                     WHERE pr.purchase_id = p.id AND pr.delivery_id IS NULL AND pr.consumed_by_product_id IS NULL
+                     ORDER BY pr.serial_no ASC
+                     LIMIT 1
+                    ) as first_serial
+
                 FROM purchases p
                 LEFT JOIN purchase_items pi ON p.id = pi.purchase_id
                 GROUP BY p.id
-                ORDER BY p.purchase_dt DESC, p.purchase_no
             """
+
+            order_clause = self.get_purchase_order_clause()
+            sql += f" ORDER BY {order_clause}"
 
             cur.execute(sql)
             rows = cur.fetchall()
+
+            # ✅ 정확한 할당 여유분 계산 (FIFO)
+            fifo_margins = calculate_fifo_allocation_margins()
 
             if not self.show_all:
                 filtered_rows = []
                 for row in rows:
                     purchase_id = row[0]
-                    # ✅ 완료 상태도 제외
                     if row[3] != '완료' and not is_purchase_completed(purchase_id):
                         filtered_rows.append(row)
                 rows = filtered_rows
@@ -294,55 +313,145 @@ class PurchaseWidget(QtWidgets.QWidget):
             self.table.setSortingEnabled(False)
 
             for r, row in enumerate(rows):
-                (purchase_id, purchase_dt, purchase_no, status, item_count,
-                 product_names, amount_krw) = row
+                (purchase_id, purchase_dt, purchase_no, status, total_qty,
+                 item_count, product_names, amount_krw,
+                 produced_qty, delivered_qty, consumed_qty, linked_order_qty, first_serial) = row
 
+                # None 값을 0으로 처리
+                total_qty = total_qty or 0
+                produced_qty = produced_qty or 0
+                delivered_qty = delivered_qty or 0
+                consumed_qty = consumed_qty or 0
+                linked_order_qty = linked_order_qty or 0
+
+                # 재고 수량 계산
+                stock_qty = produced_qty - delivered_qty - consumed_qty
+                if stock_qty < 0: stock_qty = 0
+
+                # ✅ 할당 여유: FIFO 계산 결과 적용
+                allocation_margin = fifo_margins.get(purchase_id, 0)
+
+                # ✅ [수정] 툴팁 텍스트 조건부 생성 (미생산 vs 재고)
+                if produced_qty == 0:
+                    # 생산된 수량이 0이면 '미생산' 표시
+                    stock_status_str = "미생산"
+                else:
+                    # 생산된 수량이 있으면 '재고: N개' 표시
+                    sn_info = f" (S/N: {first_serial}~)" if (stock_qty > 0 and first_serial) else ""
+                    stock_status_str = f"재고: {stock_qty}개{sn_info}"
+
+                tooltip_text = (f"총 발주: {total_qty}개 / "
+                                f"{stock_status_str} / "
+                                f"할당 여유: {allocation_margin}개")
+
+                # Col 0: 발주일 (가운데 정렬)
                 item_0 = QtWidgets.QTableWidgetItem("" if purchase_dt is None else str(purchase_dt))
                 item_0.setData(Qt.UserRole, purchase_id)
+                item_0.setTextAlignment(Qt.AlignCenter)  # ✅ 가운데 정렬
+                item_0.setToolTip(tooltip_text)  # ✅ 툴팁 설정
                 self.table.setItem(r, 0, item_0)
 
-                self.table.setItem(r, 1, QtWidgets.QTableWidgetItem(str(purchase_no or "")))
-                self.table.setItem(r, 2, QtWidgets.QTableWidgetItem(f"{item_count}개"))
+                # Col 1: 발주번호 (왼쪽 정렬)
+                item_1 = QtWidgets.QTableWidgetItem(str(purchase_no or ""))
+                item_1.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)  # ✅ 왼쪽 정렬
+                item_1.setToolTip(tooltip_text)  # ✅ 툴팁 설정
+                self.table.setItem(r, 1, item_1)
 
+                # Col 2: 총수량 (가운데 정렬)
+                item_2 = QtWidgets.QTableWidgetItem(str(total_qty or 0))
+                item_2.setTextAlignment(Qt.AlignCenter)  # ✅ 가운데 정렬
+                self.table.setItem(r, 2, item_2)
+
+                # Col 3: 품목수 (가운데 정렬)
+                item_3 = QtWidgets.QTableWidgetItem(f"{item_count}개")
+                item_3.setTextAlignment(Qt.AlignCenter)  # ✅ 가운데 정렬
+                self.table.setItem(r, 3, item_3)
+
+                # Col 4: 발주내용 (왼쪽 정렬)
                 if product_names:
                     display_names = product_names if len(product_names) < 80 else product_names[:77] + "..."
-                    self.table.setItem(r, 3, QtWidgets.QTableWidgetItem(display_names))
+                    item_4 = QtWidgets.QTableWidgetItem(display_names)
                 else:
-                    self.table.setItem(r, 3, QtWidgets.QTableWidgetItem(""))
+                    item_4 = QtWidgets.QTableWidgetItem("")
+                item_4.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)  # ✅ 왼쪽 정렬
+                item_4.setToolTip(tooltip_text)  # ✅ 툴팁 설정
+                self.table.setItem(r, 4, item_4)
 
-                self.table.setItem(r, 4, QtWidgets.QTableWidgetItem(format_money(amount_krw)))
+                # Col 5: 발주금액(원) (오른쪽 정렬)
+                item_5 = QtWidgets.QTableWidgetItem(format_money(amount_krw))
+                item_5.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)  # ✅ 오른쪽 정렬
+                self.table.setItem(r, 5, item_5)
 
+                # Col 6: 연결주문 (왼쪽 정렬)
                 order_nos = get_orders_for_purchase_display(purchase_id)
-                self.table.setItem(r, 5, QtWidgets.QTableWidgetItem(order_nos or ""))
+                item_6 = QtWidgets.QTableWidgetItem(order_nos or "")
+                item_6.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)  # ✅ 왼쪽 정렬
+                self.table.setItem(r, 6, item_6)
 
-                # ✅ 완료여부 체크박스 추가 (자동 완료 판단 포함)
-                completed_checkbox = QtWidgets.QCheckBox()
-
-                # ✅ status가 '완료'이거나 자동으로 완료된 경우 체크
+                # Col 7: 완료여부 (Checkbox + Label)
                 is_manually_completed = (status == '완료')
                 is_auto_completed = is_purchase_completed(purchase_id)
-                completed_checkbox.setChecked(is_manually_completed or is_auto_completed)
+                is_completed_overall = is_manually_completed or is_auto_completed
 
-                completed_checkbox.setStyleSheet("QCheckBox { margin-left: 20px; }")
-                completed_checkbox.stateChanged.connect(
+                # 1. 수동 완료 체크박스 (이 체크박스는 'status' 컬럼만 제어)
+                manual_checkbox = QtWidgets.QCheckBox()
+                manual_checkbox.setChecked(is_manually_completed)
+                manual_checkbox.stateChanged.connect(
                     lambda state, pid=purchase_id: self.update_completed_status(pid, state)
                 )
 
+                # 2. 상태 표시 라벨
+                status_label = QtWidgets.QLabel()
+                status_label.setAlignment(Qt.AlignCenter)
+
+                # 3. 상태에 따라 라벨 텍스트와 툴팁 설정
+                if is_manually_completed:
+                    status_label.setText("<b>수동 완료</b>")
+                    status_label.setStyleSheet("color: #6f42c1;")  # 보라색
+                    manual_checkbox.setToolTip("수동 '완료' 상태입니다.\n해제하려면 클릭하세요.")
+                elif is_auto_completed:
+                    status_label.setText("자동 완료")
+                    status_label.setStyleSheet("color: #6c757d;")  # 회색
+                    manual_checkbox.setToolTip("연결된 주문/수량이 일치하여 자동 완료되었습니다.\n(수동으로 강제 완료하려면 클릭)")
+                else:
+                    status_label.setText("미완료")
+                    status_label.setStyleSheet("color: #dc3545;")  # 붉은색
+                    manual_checkbox.setToolTip("수동으로 '완료' 처리하려면 클릭")
+
+                # 4. 위젯을 레이아웃에 담기
                 checkbox_widget = QtWidgets.QWidget()
                 checkbox_layout = QtWidgets.QHBoxLayout(checkbox_widget)
-                checkbox_layout.addWidget(completed_checkbox)
+                checkbox_layout.addWidget(manual_checkbox)
+                checkbox_layout.addWidget(status_label)
                 checkbox_layout.setAlignment(Qt.AlignCenter)
-                checkbox_layout.setContentsMargins(0, 0, 0, 0)
-                self.table.setCellWidget(r, 6, checkbox_widget)
+                checkbox_layout.setContentsMargins(5, 0, 5, 0)  # 좌우 여백
+                checkbox_layout.setSpacing(5)  # 체크박스와 라벨 간격
+                # ✅ 위젯 전체에 툴팁을 주려면 checkbox_widget.setToolTip(tooltip_text)을 쓸 수 있으나,
+                # 내부 요소(체크박스 등)의 툴팁과 충돌할 수 있어 생략하거나 필요시 추가하세요.
+                self.table.setCellWidget(r, 7, checkbox_widget)
 
-                # ✅ 완료된 항목은 회색으로 표시
-                if is_manually_completed or is_auto_completed:
-                    from PySide6.QtGui import QBrush, QColor
-                    for col in range(6):  # 0~5번 컬럼 (체크박스는 제외)
-                        if self.table.item(r, col):
-                            self.table.item(r, col).setForeground(QBrush(QColor("#888888")))
+                # ✅ 2. is_completed_overall 상태에 따라 적용할 색상 결정
+                fg_color = QColor(comp_fg if is_completed_overall else incomp_fg)
+                bg_color = QColor(comp_bg if is_completed_overall else incomp_bg)
 
+                # ✅ 3. 결정된 색상을 모든 컬럼에 적용
+                for col in range(self.table.columnCount()):
+                    item = self.table.item(r, col)
+                    if item:
+                        item.setForeground(QBrush(fg_color))
+                        item.setBackground(QBrush(bg_color))
+
+            # 1. 정렬 화살표 표시 (시그널 차단으로 무한 루프 방지)
+            with QSignalBlocker(self.table.horizontalHeader()):
+                self.table.horizontalHeader().setSortIndicator(
+                    self.current_sort_column,
+                    self.current_sort_order
+                )
+
+            # 2. 그 다음에 정렬 기능을 활성화
             self.table.setSortingEnabled(True)
+
+            # 3. 행 높이 설정
             for i in range(self.table.rowCount()):
                 self.table.setRowHeight(i, 25)
 
@@ -354,6 +463,62 @@ class PurchaseWidget(QtWidgets.QWidget):
             traceback.print_exc()
             self.purchase_data = []
             self.table.setRowCount(0)
+
+    def get_purchase_order_clause(self):
+        """(새 함수) 저장된 정렬 기준을 SQL ORDER BY 절로 변환"""
+        # ["발주일", "발주번호", "총수량", "품목수", "발주내용", "발주금액(원)", "연결주문", "완료여부"]
+        column_names = [
+            "p.purchase_dt",  # 0
+            "p.purchase_no",  # 1
+            "total_qty",  # 2
+            "item_count",  # 3
+            "product_names",  # 4
+            "amount_krw",  # 5
+            "NULL",  # 6 (연결주문은 DB에서 가져온 후 Python에서 생성하므로 SQL 정렬 불가)
+            "status"  # 7
+        ]
+
+        if self.current_sort_column == 6:  # '연결주문'은 SQL 정렬 불가, 기본값으로 대체
+            column = "p.purchase_dt"
+            direction = "DESC" if self.current_sort_order == Qt.DescendingOrder else "ASC"
+        elif 0 <= self.current_sort_column < len(column_names):
+            column = column_names[self.current_sort_column]
+            direction = "DESC" if self.current_sort_order == Qt.DescendingOrder else "ASC"
+        else:  # 기본값
+            column = "p.purchase_dt"
+            direction = "DESC"
+
+        # 2차 정렬 기준으로 발주번호 사용
+        return f"{column} {direction}, p.purchase_no {direction}"
+
+    def on_sort_indicator_changed(self, column_index, order):
+        """(새 함수) 발주 테이블 헤더의 정렬 표시기가 변경될 때 호출됩니다."""
+
+        # 1. 현재 상태와 동일하면 (load_purchase_list에 의한 프로그래밍 방식 호출), 무시
+        if self.current_sort_column == column_index and self.current_sort_order == order:
+            return
+
+        # 2. '연결주문' 컬럼(6)은 정렬 비활성화
+        if column_index == 6:
+            # 현재 정렬 상태를 유지하고, 화살표만 이전 상태로 되돌림
+            with QSignalBlocker(self.table.horizontalHeader()):
+                self.table.horizontalHeader().setSortIndicator(
+                    self.current_sort_column,
+                    self.current_sort_order
+                )
+            return
+
+        # 3. 사용자 클릭에 의한 변경이므로, 새 정렬 상태를 저장
+        self.current_sort_column = column_index
+        self.current_sort_order = order # ⬅️ 신호로 받은 'order'를 그대로 사용
+
+        # 4. 새 정렬 상태를 QSettings에 저장
+        self.settings.setValue("purchase_table/sort_column", self.current_sort_column)
+        self.settings.setValue("purchase_table/sort_order", self.current_sort_order)
+
+        # 5. 새 정렬 기준으로 데이터 목록을 다시 로드 (SQL 정렬)
+        self.load_purchase_list()
+
 
     def get_selected_purchase(self):
         """선택된 발주 가져오기"""
@@ -376,22 +541,38 @@ class PurchaseWidget(QtWidgets.QWidget):
         return None
 
     def add_purchase(self):
-        """새 발주 추가"""
+        """새 발주 추가 (모달리스)"""
         dialog = PurchaseDialog(self, is_edit=False)
-        if dialog.exec() == QtWidgets.QDialog.Accepted:
-            self.load_purchase_list()
+        dialog.accepted.connect(self.load_purchase_list)
+        dialog.finished.connect(lambda: self.cleanup_purchase_dialog(dialog))
+        dialog.show()
+        self.active_purchase_dialogs.append(dialog)
+
+    def cleanup_purchase_dialog(self, dialog):
+        if dialog in self.active_purchase_dialogs:
+            self.active_purchase_dialogs.remove(dialog)
 
     def edit_purchase(self):
-        """발주 수정"""
+        """발주 수정 (모달리스)"""
         purchase_data = self.get_selected_purchase()
         if not purchase_data:
             QtWidgets.QMessageBox.information(self, "알림", "수정할 발주를 선택해주세요.")
             return
 
         purchase_id = purchase_data[0]
+
+        # 이미 열려있는지 확인
+        for dlg in self.active_purchase_dialogs:
+            if getattr(dlg, 'purchase_id', None) == purchase_id:
+                dlg.raise_()
+                dlg.activateWindow()
+                return
+
         dialog = PurchaseDialog(self, is_edit=True, purchase_id=purchase_id)
-        if dialog.exec() == QtWidgets.QDialog.Accepted:
-            self.load_purchase_list()
+        dialog.accepted.connect(self.load_purchase_list)
+        dialog.finished.connect(lambda: self.cleanup_purchase_dialog(dialog))
+        dialog.show()
+        self.active_purchase_dialogs.append(dialog)
 
     def delete_purchase(self):
         """발주 삭제"""
@@ -439,7 +620,19 @@ class PurchaseDialog(QtWidgets.QDialog):
         self.is_edit = is_edit
         self.purchase_id = purchase_id
         self.items = []
+        self.settings = QSettings("KOBATECH", "ProductionManagement") # ✅ QSettings 추가
         self.setup_ui()
+
+        if not self.is_edit:  # 새 발주 추가일 때만
+            use_auto_num = self.settings.value("auto_numbering/enable_purchase_no", False, type=bool)
+            if use_auto_num:
+                try:
+                    today = datetime.now()
+                    next_no = get_next_purchase_number(today.year, today.month)
+                    self.edt_purchase_no.setText(next_no)
+                    self.edt_purchase_no.setStyleSheet("background-color: #fffacd;")
+                except Exception as e:
+                    print(f"추천 발주번호 생성 실패: {e}")
 
         if is_edit and purchase_id:
             self.load_purchase_data()
@@ -493,6 +686,7 @@ class PurchaseDialog(QtWidgets.QDialog):
 
         btn_add_item = QtWidgets.QPushButton("품목 추가")
         btn_add_item.clicked.connect(self.add_item)
+        btn_add_item.setStyleSheet("padding: 8px 12px; font-weight: bold;")
 
         input_form.addRow("품목코드", self.edt_item_code)
         input_form.addRow("Rev", self.edt_rev)
@@ -569,18 +763,16 @@ class PurchaseDialog(QtWidgets.QDialog):
         self.order_list.setSelectionMode(QtWidgets.QAbstractItemView.MultiSelection)
         self.order_list.setMaximumHeight(120)
         self.order_list.setStyleSheet("""
-            QListWidget::item:selected {
-                background-color: #0078d4;
-                color: white;
-                border: 1px solid #005a9e;
-            }
-            QListWidget::item:hover {
-                background-color: #e6f3ff;
-                border: 1px solid #0078d4;
-            }
-        """)
+                    QListWidget::item:selected {
+                        background-color: #0078d4;
+                        color: white;
+                        border: 1px solid #005a9e;
+                    }
+                    /* 아래 hover 부분은 삭제되었으므로, 메인 윈도우의 스타일이 적용됩니다. */
+                """)
 
-        self.load_available_orders()
+        # ✅ [수정] 현재 발주 ID를 전달하여, 이미 연결된 주문도 목록에 포함시킴
+        self.load_available_orders(self.purchase_id)
         order_layout.addWidget(self.order_list)
 
         # 버튼
@@ -632,7 +824,9 @@ class PurchaseDialog(QtWidgets.QDialog):
         self.item_table.setItem(row, 2, QtWidgets.QTableWidgetItem(purchase_desc))
         self.item_table.setItem(row, 3, QtWidgets.QTableWidgetItem(f"{qty:,}"))
         self.item_table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{unit_price:,}"))
-        self.item_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{qty * unit_price:,}"))
+
+        rounded_total = self._get_rounded_item_total(qty, unit_price)
+        self.item_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{rounded_total:,}"))
 
         self.edt_item_code.clear()
         self.edt_rev.clear()
@@ -726,7 +920,8 @@ class PurchaseDialog(QtWidgets.QDialog):
         self.item_table.setItem(row, 2, QtWidgets.QTableWidgetItem(purchase_desc))
         self.item_table.setItem(row, 3, QtWidgets.QTableWidgetItem(f"{qty:,}"))
         self.item_table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{unit_price:,}"))
-        self.item_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{qty * unit_price:,}"))
+        rounded_total = self._get_rounded_item_total(qty, unit_price)
+        self.item_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{rounded_total:,}"))
 
         self.update_total_amount()
 
@@ -751,17 +946,44 @@ class PurchaseDialog(QtWidgets.QDialog):
             self.update_total_amount()
 
     def update_total_amount(self):
-        """이 금액 업데이트 (계산된 금액 표시)"""
-        total = sum(item['qty'] * (item['unit_price_cents'] // 100) for item in self.items)
-        self.lbl_calculated_amount.setText(f"{total:,}")
+        """계산된 금액과 실제 발주금액을 업데이트합니다."""
+        # 1. 현재 '실제 발주금액' 필드에 입력된 값과, '계산된 금액' 라벨에 표시된 옛날 합계를 가져옵니다.
+        current_actual_amount = self.edt_total_amount.get_value()
+        try:
+            # 라벨의 텍스트(예: "1,250,000")에서 쉼표를 제거하고 숫자로 변환합니다.
+            old_calculated_amount = int(self.lbl_calculated_amount.text().replace(',', ''))
+        except ValueError:
+            old_calculated_amount = 0
 
-        # ✅ 실제 발주금액이 비어있으면 계산된 금액으로 자동 설정
-        if self.edt_total_amount.get_value() == 0:
-            self.edt_total_amount.set_value(total)
+        # 2. 새로 추가된 품목을 포함하여 새로운 합계를 계산합니다.
+        new_total = sum(
+            self._get_rounded_item_total(item['qty'], item['unit_price_cents'] // 100)
+            for item in self.items
+        )
 
-    def load_available_orders(self):
-        """연결 가능한 주문 목록 로드"""
-        orders = get_available_orders_for_purchase()
+        # ✅ [추가] 반올림 설정 적용
+        enabled = self.settings.value("calculations/purchase_rounding_enabled", False, type=bool)
+        unit = self.settings.value("calculations/purchase_rounding_unit", 1, type=int)
+
+        if enabled and unit > 1:
+            # unit(10) -> ndigits(-1), unit(100) -> ndigits(-2)
+            unit_to_digits = {10: -1, 100: -2, 1000: -3}
+            ndigits = unit_to_digits.get(unit, 0)
+            if ndigits != 0:
+                new_total = round(new_total, ndigits)
+
+        # 3. '계산된 금액' 라벨은 항상 새로운 합계로 업데이트합니다.
+        self.lbl_calculated_amount.setText(f"{new_total:,}")
+
+        # 4. [핵심 로직] '실제 발주금액'이 이전 합계와 동일한 경우 (사용자가 수정하지 않은 경우),
+        #    새로운 합계로 함께 업데이트합니다.
+        if current_actual_amount == old_calculated_amount:
+            self.edt_total_amount.set_value(new_total)
+
+    def load_available_orders(self, purchase_id_to_include=None):
+        """연결 가능한 주문 목록 로드 (수정 시 기존 연결 건 포함)"""
+        # ✅ [수정] 인자로 받은 ID를 SQL 쿼리 함수에 전달
+        orders = get_available_orders_for_purchase(purchase_id_to_include)
         for order_id, order_no, order_desc, qty, req_due in orders:
             display_text = f"{order_no} - {order_desc} (수량: {qty}, 납기: {req_due})"
             item = QtWidgets.QListWidgetItem(display_text)
@@ -819,168 +1041,88 @@ class PurchaseDialog(QtWidgets.QDialog):
             total = sum(item['qty'] * (item['unit_price_cents'] // 100) for item in self.items)
             self.edt_total_amount.set_value(total)
 
+    def _get_rounded_item_total(self, qty, unit_price):
+        """(새 함수) 설정에 따라 '반올림' 또는 '버림'된 개별 품목 금액을 반환"""
+        item_total = qty * unit_price
+
+        # ✅ [수정] '계산 방식'과 '자릿수'를 불러옴
+        method = self.settings.value("calculations/purchase_rounding_method", "none", type=str)
+        digits = self.settings.value("calculations/purchase_rounding_digits", 0, type=int)
+
+        # '적용 안함'이거나 digits가 0이면(1원 단위) 원본 값 반환
+        if method == "none" or digits == 0:
+            return item_total
+
+        # ✅ [수정] 자릿수(digits)로 단위(unit) 계산
+        unit = 10 ** digits  # (digits=1 -> unit=10, digits=4 -> unit=10000)
+
+        if method == "round":
+            # --- 반올림 (사사오입) ---
+            # (digits=1 -> ndigits=-1, digits=4 -> ndigits=-4)
+            ndigits = -digits
+            item_total = round(item_total, ndigits)
+
+        elif method == "floor":
+            # --- 버림 (내림) ---
+            item_total = (item_total // unit) * unit
+
+        return item_total
+
     def accept_dialog(self):
-        """발주 저장"""
+        # 1. 입력값 검증
         purchase_no = self.edt_purchase_no.text().strip()
-
-        if not purchase_no:
-            QtWidgets.QMessageBox.warning(self, "입력 오류", "발주번호는 필수입니다.")
+        if not purchase_no or not self.items:
+            QtWidgets.QMessageBox.warning(self, "입력 오류", "발주번호와 최소 1개 이상의 품목은 필수입니다.")
             return
 
-        if not self.items:
-            QtWidgets.QMessageBox.warning(self, "입력 오류", "최소 1개 이상의 품목을 추가해야 합니다.")
-            return
+        purchase_dt = parse_due_text(self.edt_purchase_dt.text())
 
-        purchase_dt_raw = self.edt_purchase_dt.text().strip()
-        purchase_dt = parse_due_text(purchase_dt_raw) if purchase_dt_raw else None
-
-        if purchase_dt_raw and not purchase_dt:
-            QtWidgets.QMessageBox.warning(self, "발주일", "발주일 형식이 올바르지 않습니다.")
-            return
-
-        selected_order_ids = []
-        for i in range(self.order_list.count()):
-            item = self.order_list.item(i)
-            if item.isSelected():
-                selected_order_ids.append(item.data(Qt.UserRole))
-
-        # ✅ 실제 발주금액 가져오기
-        actual_total = self.edt_total_amount.get_value()
+        # 2. 총액 계산
         calculated_total = sum(item['qty'] * (item['unit_price_cents'] // 100) for item in self.items)
+        actual_total = self.edt_total_amount.get_value()
 
-        # ✅ 금액 차이가 있으면 확인
-        if actual_total != calculated_total and actual_total > 0:
-            reply = QtWidgets.QMessageBox.question(
-                self,
-                "발주금액 확인",
-                f"품목 금액 합계: {calculated_total:,}원\n"
-                f"실제 발주금액: {actual_total:,}원\n"
-                f"차이: {actual_total - calculated_total:,}원\n\n"
-                f"실제 발주금액({actual_total:,}원)으로 저장하시겠습니까?",
-                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-                QtWidgets.QMessageBox.Yes
-            )
-            if reply != QtWidgets.QMessageBox.Yes:
-                return
+        # 3. 데이터 준비
+        purchase_data = {
+            'purchase_no': purchase_no,
+            'purchase_dt': purchase_dt,
+            'status': '발주',
+            'actual_amount': (actual_total if actual_total > 0 else calculated_total) * 100
+        }
+
+        # ✅ [핵심] 선택된 주문 ID 목록 가져오기
+        selected_order_ids = [item.data(Qt.UserRole) for item in self.order_list.selectedItems()]
 
         try:
-            if self.cb_update_master.isChecked():
-                for item in self.items:
-                    if item['item_code']:
-                        update_product_master_purchase_price(
-                            item_code=item['item_code'],
-                            rev=item.get('rev'),
-                            product_name=item['product_name'],
-                            purchase_price_krw=item['unit_price_cents']
-                        )
-
-            # ✅ 수정 (라인 836 근처)
-            purchase_data = {
-                'purchase_no': purchase_no,
-                'purchase_dt': purchase_dt,
-                'status': '발주',
-                'actual_amount': (actual_total if actual_total > 0 else calculated_total) * 100  # ✅ 센트 단위로!
-            }
-
             if self.is_edit:
-                # ✅ 발주 수정 구현
-                conn = get_conn()
-                try:
-                    cur = conn.cursor()
-
-                    # 헤더 업데이트
-                    # ✅ 수정된 코드
-                    cur.execute("""
-                        UPDATE purchases SET
-                            purchase_no = ?,
-                            purchase_dt = ?,
-                            actual_amount = ?,
-                            status = ?,
-                            updated_at = datetime('now','localtime')
-                        WHERE id = ?
-                    """, (purchase_no, purchase_dt,
-                          (actual_total if actual_total > 0 else calculated_total) * 100,  # ✅ 센트 단위로
-                          '발주', self.purchase_id))
-
-                    # 기존 품목 삭제 후 재등록
-                    cur.execute("DELETE FROM purchase_items WHERE purchase_id = ?", (self.purchase_id,))
-
-                    for item in self.items:
-                        cur.execute("""
-                            INSERT INTO purchase_items (
-                                purchase_id, item_code, rev, product_name,
-                                qty, unit_price_cents, currency
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """, (
-                            self.purchase_id,
-                            item.get('item_code'),
-                            item.get('rev'),
-                            item['product_name'],
-                            item['qty'],
-                            item['unit_price_cents'],
-                            item.get('currency', 'KRW')
-                        ))
-
-                    # 기존 주문 연결 삭제
-                    cur.execute("DELETE FROM purchase_order_links WHERE purchase_id = ?", (self.purchase_id,))
-
-                    # 새로운 주문 연결 추가
-                    for order_id in selected_order_ids:
-                        cur.execute("""
-                            INSERT INTO purchase_order_links (purchase_id, order_id)
-                            VALUES (?, ?)
-                        """, (self.purchase_id, order_id))
-
-                    conn.commit()
-
-                    QtWidgets.QMessageBox.information(
-                        self, "완료",
-                        f"발주 '{purchase_no}'이 수정되었습니다.\n"
-                        f"품목 수: {len(self.items)}개\n"
-                        f"발주금액: {actual_total if actual_total > 0 else calculated_total:,}원"
-                    )
-
-                except Exception as e:
-                    conn.rollback()
-                    QtWidgets.QMessageBox.critical(
-                        self, "오류",
-                        f"발주 수정 중 오류가 발생했습니다:\n{str(e)}"
-                    )
-                    import traceback
-                    traceback.print_exc()
-                    return
-                finally:
-                    conn.close()
-
-            else:
-                conn = get_conn()
-                cur = conn.cursor()
-                cur.execute("SELECT 1 FROM purchases WHERE purchase_no=?", (purchase_no,))
-                if cur.fetchone():
-                    reply = QtWidgets.QMessageBox.question(
-                        self, "발주번호 중복",
-                        f"발주번호 '{purchase_no}'가 이미 존재합니다.\n계속 진행하시겠습니까?",
-                        QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-                        QtWidgets.QMessageBox.No
-                    )
-                    if reply != QtWidgets.QMessageBox.Yes:
-                        conn.close()
-                        return
-                conn.close()
-
-                create_purchase_with_items(purchase_data, self.items, selected_order_ids)
-
-                # ✅ 저장 완료 메시지에 실제 금액 표시
-                QtWidgets.QMessageBox.information(
-                    self, "완료",
-                    f"새 발주가 추가되었습니다.\n"
-                    f"품목 수: {len(self.items)}개\n"
-                    f"발주금액: {actual_total if actual_total > 0 else calculated_total:,}원"
+                # 수정 모드: 연결 정보 수정 + 자동 할당 실행
+                update_purchase_with_items(
+                    self.purchase_id,
+                    purchase_data,
+                    self.items,
+                    selected_order_ids
                 )
+                action = "수정"
+            else:
+                # 신규 모드: 연결 정보 저장 (할당은 아직 제품이 없으니 패스)
+                create_purchase_with_items(
+                    purchase_data,
+                    self.items,
+                    selected_order_ids  # ✅ 여기서 주문 ID 리스트를 꼭 넘겨줘야 합니다!
+                )
+                action = "등록"
 
+            QtWidgets.QMessageBox.information(
+                self, "완료",
+                f"발주 '{purchase_no}'이 {action}되었습니다.\n"
+                f"품목 수: {len(self.items)}개\n"
+                f"발주금액: {actual_total if actual_total > 0 else calculated_total:,}원"
+            )
             self.accept()
 
         except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "오류", f"발주 저장 중 오류가 발생했습니다:\n{str(e)}")
+            if "UNIQUE constraint failed" in str(e):
+                QtWidgets.QMessageBox.critical(self, "중복 오류", f"발주번호 '{purchase_no}'는 이미 존재합니다.")
+            else:
+                QtWidgets.QMessageBox.critical(self, "오류", f"발주 저장 중 오류가 발생했습니다:\n{str(e)}")
             import traceback
             traceback.print_exc()
