@@ -10,10 +10,11 @@ import platform
 # ---------------------------------------------------------
 # 1. API 키 설정
 # ---------------------------------------------------------
-raw_api_key = "AIzaSyCQgEVkwdervsG8zdauyN4bw7sKH96eBGA"
-api_key = raw_api_key.strip()
+api_key = os.environ.get("GOOGLE_API_KEY")
+if not api_key:
+    print("⚠️ 경고: GOOGLE_API_KEY 환경 변수가 설정되지 않았습니다.")
 
-os.environ["GOOGLE_API_KEY"] = api_key
+os.environ["GOOGLE_API_KEY"] = api_key if api_key else ""
 genai.configure(api_key=api_key)
 
 # ---------------------------------------------------------
