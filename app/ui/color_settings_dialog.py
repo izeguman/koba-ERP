@@ -91,7 +91,7 @@ class ColorSettingsDialog(QtWidgets.QDialog):
             ("발주 정보", "purchase",       ("완료", "미완료")),
             ("납품 정보", "delivery",       ("완료", "미완료")),
             ("제품 생산", "product",        ("완료", "미완료")),
-            ("품목 관리", "product_master", ("생산", "단종")),
+            ("품목 관리", "product_master", ("판매중", "내부용")),
             ("재고 현황", "inventory", ("재고 있음", "재고 없음")),
             # ✅ [추가] 수리 관리 카테고리
             ("수리 관리", "repair", ("재출고/자체", "진행중")),

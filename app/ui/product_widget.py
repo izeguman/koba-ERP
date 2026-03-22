@@ -4,17 +4,292 @@ from PySide6.QtWidgets import (QHeaderView, QTreeWidget, QTreeWidgetItem,
                                QMessageBox, QGroupBox, QVBoxLayout, QFormLayout,
                                QLabel, QSpinBox, QListWidget, QListWidgetItem,
                                QPushButton, QDialog, QLineEdit, QDialogButtonBox)
-from PySide6.QtCore import QLocale, Qt, QSignalBlocker
+from PySide6.QtCore import QLocale, Qt, QSignalBlocker, QThread, Signal
 from PySide6.QtGui import QBrush, QColor
 from datetime import datetime
 import re
+import os
+import glob
+import time
 
-from .utils import parse_due_text
+from .utils import parse_due_text, apply_table_resize_policy
 from ..db import (get_conn, query_all, is_purchase_completed, get_available_purchases,
                   get_bom_requirements, get_available_stock_for_bom, create_products,
-                  assign_product_info_batch, reset_product_info_batch, get_repairs_for_product)
+                  assign_product_info_batch, reset_product_info_batch, get_repairs_for_product,
+                  update_product_qc_info)
 from .autocomplete_widgets import AutoCompleteLineEdit
 from ..ui.repair_widget import RepairDialog
+from ..doc import qc_38_101A  # ✅ [추가] QC 문서 검토 모듈 임포트
+import zipfile
+import tempfile
+import shutil
+import pandas as pd  # ✅ pandas 추가
+
+# ✅ [추가] QC 분석 워커 스레드
+# ✅ [추가] QC 로그 다이얼로그
+class QCProgressDialog(QtWidgets.QDialog):
+    def __init__(self, parent=None, total_files=0):
+        super().__init__(parent)
+        self.setWindowTitle("QC 문서 분석 진행 상황")
+        self.resize(600, 400)
+        self.setModal(True)
+        
+        layout = QVBoxLayout(self)
+        
+        # 상단: 진행 바 및 상태 메시지
+        self.status_label = QLabel("준비 중...")
+        layout.addWidget(self.status_label)
+        
+        self.progress_bar = QtWidgets.QProgressBar()
+        self.progress_bar.setRange(0, total_files * 100)
+        self.progress_bar.setValue(0)
+        layout.addWidget(self.progress_bar)
+        
+        # 중간: 로그 출력 영역
+        log_group = QGroupBox("상세 로그 (Terminal Output)")
+        log_layout = QVBoxLayout()
+        self.log_text = QtWidgets.QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setStyleSheet("background-color: black; color: #00FF00; font-family: Consolas, monospace;")
+        log_layout.addWidget(self.log_text)
+        log_group.setLayout(log_layout)
+        layout.addWidget(log_group)
+        
+        # 하단: 버튼
+        btn_layout = QtWidgets.QHBoxLayout()
+        self.btn_cancel = QPushButton("중지")
+        self.btn_close = QPushButton("닫기")
+        self.btn_close.setEnabled(False) # 완료 전엔 비활성화
+        
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.btn_cancel)
+        btn_layout.addWidget(self.btn_close)
+        layout.addLayout(btn_layout)
+        
+        self.btn_cancel.clicked.connect(self.reject)
+        self.btn_close.clicked.connect(self.accept)
+
+    def update_progress(self, val, msg):
+        self.progress_bar.setValue(val)
+        self.status_label.setText(msg)
+
+    def append_log(self, msg):
+        self.log_text.append(msg)
+        # 자동 스크롤
+        sb = self.log_text.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def set_finished(self):
+        self.status_label.setText("분석 완료")
+        self.progress_bar.setValue(self.progress_bar.maximum())
+        self.btn_cancel.setVisible(False)
+        self.btn_close.setEnabled(True)
+
+class QCWorker(QThread):
+    progress_changed = Signal(int, str)  # 진행률 (index, message)
+    finished_signal = Signal(int, int)   # 완료 (success_count, total_count)
+    error_occurred = Signal(str)         # 에러 메시지
+    analysis_result = Signal(str, dict)  # ✅ [추가] 분석 결과 시그널 (file_path, result_data)
+    log_signal = Signal(str)             # ✅ [추가] 로그 시그널
+
+    def __init__(self, target_files, model_name='gemini-2.0-flash'):
+        super().__init__()
+        self.target_files = target_files
+        self.model_name = model_name
+        self.is_cancelled = False
+
+    # ✅ [변경] QC 분석 워커 스레드
+    def run(self):
+        success_count = 0
+        total_count = len(self.target_files)
+
+        for i, file_path in enumerate(self.target_files):
+            if self.is_cancelled:
+                break
+            
+            self.current_index = i # 콜백에서 사용하기 위해 저장
+            
+            # 파일명만 추출해서 상태 메시지 전달 (초기 0%로 시작)
+            file_name = os.path.basename(file_path)
+            self.progress_changed.emit(i * 100, f"분석 중: {file_name}")
+
+            try:
+                if self.process_qc_file(file_path):
+                    success_count += 1
+                    # 파일 완료 시 100% 채움
+                    self.progress_changed.emit((i + 1) * 100, f"완료: {file_name}")
+                else:
+                    self.progress_changed.emit((i + 1) * 100, f"실패 (분석 불가): {file_name}")
+            except Exception as e:
+                err_msg = str(e)
+                if "취소" in err_msg or "cancelled" in err_msg.lower():
+                    self.log_signal.emit(f"🛑 작업이 취소되었습니다.")
+                    self.is_cancelled = True
+                    break
+                if "Quota exceeded" in err_msg:
+                    self.log_signal.emit(f"⛔ Quota Exceeded. 작업 중단.")
+                    self.is_cancelled = True
+                    break
+                    
+                print(f"Error processing {file_path}: {e}")
+                self.log_signal.emit(f"❌ 오류 발생: {e}")
+                self.progress_changed.emit((i + 1) * 100, f"오류 발생: {file_name}")
+
+            if self.is_cancelled: break
+            time.sleep(1) # 파일 간 딜레이 (Rate Limit 방지 -> 성공 시엔 짧게)
+
+        if not self.is_cancelled:
+            self.finished_signal.emit(success_count, total_count)
+
+    def cancel(self):
+        self.is_cancelled = True
+            
+    def process_qc_file(self, file_path):
+        """단일 QC 파일(ZIP 또는 PDF)을 처리하는 내부 로직"""
+        # 개별 파일 진행률 업데이트 콜백 함수 정의 (msg, percent)
+        def update_progress(msg, percent=0):
+            file_name = os.path.basename(file_path)
+            # 전체 진행률 계산: (현재 파일 인덱스 * 100) + 현재 파일 진행률
+            global_progress = (self.current_index * 100) + percent
+            self.progress_changed.emit(global_progress, f"[{file_name}] {msg}")
+
+        # ✅ [추가] 로그 콜백
+        def log_wrapper(msg):
+            self.log_signal.emit(msg)
+
+        _, ext = os.path.splitext(file_path)
+        ext = ext.lower()
+
+        if ext == '.zip':
+            return self.process_zip(file_path, update_progress, log_wrapper)
+        elif ext == '.pdf':
+            return self.process_pdf(file_path, update_progress, log_wrapper)
+        return False
+            
+
+
+    def process_zip(self, zip_path, progress_callback, log_callback):
+        """ZIP 파일 처리"""
+        temp_dir = tempfile.mkdtemp()
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(temp_dir)
+            
+            pdf_files = glob.glob(os.path.join(temp_dir, "**", "*.pdf"), recursive=True)
+            if not pdf_files:
+                return False
+            
+            target_pdf = max(pdf_files, key=os.path.getsize)
+            # ✅ [변경] 취소 체크 콜백 전달 + 로그 콜백 전달 + 모델 전달
+            analysis_result = qc_38_101A.analyze_pdf(target_pdf, progress_callback, cancel_check=lambda: self.is_cancelled, log_callback=log_callback, model_name=self.model_name)
+            
+            if not analysis_result:
+                return False
+
+            self.save_result(zip_path, analysis_result, log_callback)
+            self.analysis_result.emit(zip_path, analysis_result) # ✅ 결과 Emit
+            return True
+
+        except Exception:
+            return False
+        finally:
+            shutil.rmtree(temp_dir)
+
+    def process_pdf(self, pdf_path, progress_callback, log_callback):
+        """PDF 파일 직접 처리"""
+        try:
+            # ✅ [변경] 취소 체크 콜백 전달 + 로그 콜백 전달 + 모델 전달
+            analysis_result = qc_38_101A.analyze_pdf(pdf_path, progress_callback, cancel_check=lambda: self.is_cancelled, log_callback=log_callback, model_name=self.model_name)
+            if not analysis_result:
+                return False
+            
+            self.save_result(pdf_path, analysis_result, log_callback)
+            self.analysis_result.emit(pdf_path, analysis_result) # ✅ 결과 Emit
+            return True
+        except Exception:
+            return False
+
+    def save_result(self, source_path, analysis_result, log_callback=None):
+        """결과 엑셀 저장"""
+        source_dir = os.path.dirname(source_path) # 파일이 있는 폴더
+        # 요청사항: "트리 자식 노드에서 검사를 실행했을 경우... 그 파일이 있는 폴더의 상위 폴더에 저장하게 해줘."
+        # 즉, source_dir의 부모 디렉토리에 저장해야 함.
+        parent_dir = os.path.dirname(source_dir) 
+        
+        approved_dir = os.path.join(parent_dir, "QC Approved")
+        if not os.path.exists(approved_dir):
+            os.makedirs(approved_dir)
+            
+        file_name = os.path.splitext(os.path.basename(source_path))[0]
+        excel_name = f"{file_name}_Result.xlsx"
+        excel_path = os.path.join(approved_dir, excel_name)
+        
+        rows = self.flatten_qc_results(analysis_result)
+        
+        df = pd.DataFrame(rows)
+        df.to_excel(excel_path, index=False)
+        if log_callback: log_callback(f"💾 엑셀 저장 완료: {excel_path}")
+
+    def flatten_qc_results(self, data):
+        """분석 결과를 엑셀 행 리스트로 변환"""
+        results = []
+        meta = data.get("meta_info", {})
+        base_info = {"Serial": meta.get("serial_no"), "Date": meta.get("date")}
+        
+        # 2. Visual
+        for v in data.get("visual_inspection", []):
+            row = base_info.copy()
+            row.update({"Category": "Visual Inspection", "Item": f"Item {v.get('id')}", "Value": "-", "Result": v.get("result"), "Note": ""})
+            results.append(row)
+            
+        # 3. Measurements
+        for m in data.get("measurements", []):
+            row = base_info.copy()
+            row.update({"Category": "Measurements (Item 5)", "Item": m.get("item"), "Value": m.get("table_value"), "Result": m.get("table_result"), "Note": m.get("Note", "")})
+            if "Note" not in m:
+                t_val, i_val = m.get("table_value", 0), m.get("image_value", 0)
+                msg = "Matched" if abs(float(t_val or 0) - float(i_val or 0)) < 0.1 else f"Img:{i_val}"
+                row["Note"] = msg
+            results.append(row)
+            
+        # 4. Resistance
+        for r in data.get("resistance_tests", []):
+            row = base_info.copy()
+            row.update({"Category": "Resistance", "Item": r.get("pin"), "Value": r.get("measured"), "Result": r.get("result"), "Note": ""})
+            results.append(row)
+             
+        # 5. LEDs
+        for l in data.get("led_tests", []):
+            row = base_info.copy()
+            row.update({"Category": "LEDs", "Item": l.get("led"), "Value": "-", "Result": l.get("result"), "Note": ""})
+            results.append(row)
+            
+        # 6. Section 5.10
+        for s in data.get("section_5_10", []):
+            row = base_info.copy()
+            row.update({"Category": "Section 5.10", "Item": s.get("item"), "Value": s.get("table_value"), "Result": s.get("table_result"), "Note": ""})
+            results.append(row)
+
+        # 7. Voltage Monitors
+        for vm in data.get("voltage_monitors", []):
+            row = base_info.copy()
+            row.update({"Category": "Voltage Monitors", "Item": vm.get("item"), "Value": vm.get("table_value"), "Result": vm.get("table_result"), "Note": ""})
+            results.append(row)
+            
+        # 8. Waveforms
+        for key in ["waveform_J6A", "waveform_J6B", "waveform_J7A", "waveform_J7B", "waveform_J9A"]:
+            wf = data.get(key, {})
+            for tr in wf.get("table_rows", []):
+                row = base_info.copy()
+                row.update({"Category": key, "Item": tr.get("item"), "Value": tr.get("value"), "Result": "-", "Note": "Table Value"})
+                results.append(row)
+            img = wf.get("image_data", {})
+            if img:
+                row = base_info.copy()
+                row.update({"Category": key, "Item": "Image Analysis", "Value": f"Freq: {img.get('Frequency_kHz')}kHz", "Result": "-", "Note": f"Vpp: {img.get('Vpp')}, Vmax: {img.get('Vmax')}, Vmin: {img.get('Vmin')}"})
+                results.append(row)
+
+        return results
 
 
 def get_next_serial_number(conn, part_no: str) -> str:
@@ -207,7 +482,7 @@ class ProductWidget(QtWidgets.QWidget):
                     }
                 """)
         self.tree.setHeaderLabels(
-            ["제조일자", "품목코드", "제품명", "시리얼번호", "제조코드", "발주번호", "납품상태"]
+            ["품목코드", "제품명", "시리얼번호", "제조코드", "발주번호", "리콜상태", "납품상태", "주문번호", "검사일자", "발송일자", "납품일자"]
         )
         self.tree.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.tree.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
@@ -232,13 +507,17 @@ class ProductWidget(QtWidgets.QWidget):
         for col in range(self.tree.columnCount()):
             header.setSectionResizeMode(col, QHeaderView.Interactive)
 
-        self.tree.setColumnWidth(0, 100)    # 제조일자
-        self.tree.setColumnWidth(1, 120)    # 품목코드
-        self.tree.setColumnWidth(2, 600)    # 제품명
-        self.tree.setColumnWidth(3, 300)    # 시리얼번호
-        self.tree.setColumnWidth(4, 100)    # 제조코드
-        self.tree.setColumnWidth(5, 120)    # 발주번호
+        self.tree.setColumnWidth(0, 120)    # 품목코드
+        self.tree.setColumnWidth(1, 400)    # 제품명
+        self.tree.setColumnWidth(2, 200)    # 시리얼번호
+        self.tree.setColumnWidth(3, 100)    # 제조코드
+        self.tree.setColumnWidth(4, 120)    # 발주번호
+        self.tree.setColumnWidth(5, 100)    # 리콜상태
         self.tree.setColumnWidth(6, 100)    # 납품상태
+        self.tree.setColumnWidth(7, 120)    # 주문번호
+        self.tree.setColumnWidth(8, 100)    # 검사일자
+        self.tree.setColumnWidth(9, 100)    # 발송일자
+        self.tree.setColumnWidth(10, 100)   # 납품일자
 
         if self.settings:
             self.restore_column_widths()
@@ -248,6 +527,12 @@ class ProductWidget(QtWidgets.QWidget):
 
         layout.addLayout(title_layout)
         layout.addWidget(self.tree)
+
+        apply_table_resize_policy(self.tree)
+        
+        # ✅ [수정] 가로 스크롤바 활성화 (utils 정책 오버라이드)
+        self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.tree.header().setStretchLastSection(False)
 
         self.product_data = {}
 
@@ -309,10 +594,10 @@ class ProductWidget(QtWidgets.QWidget):
         unassigned_items = []
         for i in child_items:
             p_id = i.data(0, Qt.UserRole + 1)
-            # S/N 컬럼(3번) 텍스트 확인
-            sn_text = i.text(3)
+            # S/N 컬럼(2번) 텍스트 확인
+            sn_text = i.text(2)
             if "미확정" in sn_text or not sn_text:
-                unassigned_items.append((p_id, i.text(1)))  # id, part_no
+                unassigned_items.append((p_id, i.text(0)))  # id, part_no (0번 컬럼)
 
         if unassigned_items:
             assign_action = menu.addAction(f"시리얼 번호 부여 (확정) - {len(unassigned_items)}개")
@@ -332,8 +617,8 @@ class ProductWidget(QtWidgets.QWidget):
         assigned_items = []
         for i in child_items:
             p_id = i.data(0, Qt.UserRole + 1)
-            sn_text = i.text(3)
-            status_text = i.text(6)  # 납품상태 컬럼
+            sn_text = i.text(2) # Serial No (Col 2)
+            status_text = i.text(5)  # 납품상태 컬럼 (Col 5)
 
             # 조건: S/N이 있고(미확정 아님) + 납품/소모/자체처리가 아닌 '재고' 상태여야 함
             is_assigned = (sn_text and "미확정" not in sn_text)
@@ -361,6 +646,12 @@ class ProductWidget(QtWidgets.QWidget):
             delete_action = menu.addAction("삭제")
             delete_action.triggered.connect(self.delete_product)
 
+            # ✅ [추가] 조립품인 경우 부품 정보 보기 메뉴
+            # (조립품인지 판별: 텍스트에 '(조립품)'이 있거나 별도 플래그 확인)
+            if "(조립품)" in item.text(1):
+                 menua_assembly = menu.addAction("조립 부품 정보 보기")
+                 menua_assembly.triggered.connect(lambda: self.show_assembly_info(item))
+
         # 여러 개 선택 시 일괄 삭제 메뉴
         selected_items = self.tree.selectedItems()
         child_items = [item for item in selected_items if item.parent()]
@@ -370,6 +661,31 @@ class ProductWidget(QtWidgets.QWidget):
             delete_multiple_action = menu.addAction(f"선택한 {len(child_items)}개 삭제")
             delete_multiple_action.triggered.connect(self.delete_multiple_products)
 
+        # ✅ [추가] QC 문서 검토 메뉴 (B10000850333 전용)
+        # 선택된 항목이 하나일 때만 (폴더 또는 파일)
+        if len(selected_items) == 1:
+            target_item = selected_items[0]
+            part_no = target_item.text(0)  # 컬럼 0: 품목코드
+
+            # 부모 노드(그룹)인 경우의 part_no 확인
+            if not target_item.parent():
+                part_no = target_item.text(0)
+            
+            # 특정 제품 코드에 대해서만 메뉴 표시
+            if part_no == "B10000850333":
+                menu.addSeparator()
+                qc_menu = menu.addMenu("QC 문서 검토 (38-101A)")
+                
+                if not target_item.parent():
+                    # 그룹(폴더) 선택 시
+                    action_folder = qc_menu.addAction("폴더 선택 검토")
+                    action_folder.triggered.connect(self.run_qc_review_folder)
+                else:
+                    # 개별 제품(파일) 선택 시
+                    action_file = qc_menu.addAction("파일(ZIP) 선택 검토")
+                    action_file.triggered.connect(self.run_qc_review_file)
+                menu.addSeparator()
+
         # ✅ [추가] 맨 아래에 시스템 관리용 메뉴 추가
         if not menu.isEmpty():
             menu.addSeparator()
@@ -378,9 +694,6 @@ class ProductWidget(QtWidgets.QWidget):
         recalc_action.triggered.connect(self.run_recalculation)
 
         menu.exec_(self.tree.mapToGlobal(position))
-
-        if not menu.isEmpty():
-            menu.exec_(self.tree.mapToGlobal(position))
 
     # ✅ [추가] 재계산 실행 함수
     def run_recalculation(self):
@@ -405,7 +718,7 @@ class ProductWidget(QtWidgets.QWidget):
         """(새 함수) 선택된 제품의 S/N 정보를 초기화합니다."""
         reply = QMessageBox.question(
             self, "시리얼 번호 삭제",
-            f"선택한 {len(product_ids)}개 제품의 시리얼 번호와 제조일자 정보를 삭제하시겠습니까?\n\n"
+            f"선택한 {len(product_ids)}개 제품의 시리얼 번호와 검사일자 정보를 삭제하시겠습니까?\n\n"
             "삭제 후에는 '미확정 재고' 상태로 변경되어,\n"
             "나중에 다시 일괄 부여할 수 있습니다.",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No
@@ -514,13 +827,26 @@ class ProductWidget(QtWidgets.QWidget):
                   EXISTS (SELECT 1 FROM products p_sub 
                           WHERE p_sub.consumed_by_product_id = pr.id) as is_assembly,
                   
-                  -- ✅ [추가] 예약된 주문 번호 조회
                   (SELECT order_no FROM orders WHERE id = pr.reserved_order_id) as reserved_order_no,
+                  COALESCE(
+                      (SELECT MAX(os.due_date) 
+                       FROM order_shipments os 
+                       JOIN order_items oi ON os.order_item_id = oi.id 
+                       WHERE oi.order_id = pr.reserved_order_id AND oi.item_code = pr.part_no),
+                      (SELECT final_due FROM orders WHERE id = pr.reserved_order_id)
+                  ) as reserved_due_date,
 
                   (SELECT TRIM(r.status) FROM product_repairs r 
                    WHERE r.product_id = pr.id 
-                   ORDER BY r.receipt_date DESC, r.id DESC LIMIT 1) as latest_repair_status
+                   ORDER BY r.receipt_date DESC, r.id DESC LIMIT 1) as latest_repair_status,
 
+                   (SELECT ri.item_status FROM recall_items ri 
+                    JOIN recall_cases rc ON ri.recall_case_id = rc.id 
+                    WHERE ri.product_id = pr.id 
+                    ORDER BY rc.receipt_date DESC LIMIT 1) as recall_status,
+
+                   d.ship_datetime
+                   
                 FROM products pr
                 LEFT JOIN purchases p ON pr.purchase_id = p.id
                 LEFT JOIN deliveries d ON pr.delivery_id = d.id
@@ -535,10 +861,11 @@ class ProductWidget(QtWidgets.QWidget):
             # (그룹화)
             grouped_data = {}
             for row in rows:
-                # ✅ [수정 1] 여기에도 reserved_order_no를 추가해야 합니다.
+                # ✅ [수정 1] unpacking - 17 columns (reserved_due_date added)
                 (product_id, manufacture_date, part_no, product_name, serial_no, manufacture_code,
                  purchase_no, purchase_id, is_delivered, delivered_at, delivery_invoice,
-                 consumed_by_product_id, is_assembly, reserved_order_no, latest_repair_status) = row
+                 consumed_by_product_id, is_assembly, reserved_order_no, reserved_due_date, latest_repair_status,
+                 recall_status, ship_datetime) = row
 
                 key = (part_no or "미지정", purchase_no or "미지정")
                 if key not in grouped_data: grouped_data[key] = []
@@ -601,13 +928,15 @@ class ProductWidget(QtWidgets.QWidget):
                 if not is_complete:
                     is_complete = (delivered_count + consumed_count == total_count) and total_count > 0
                 parent_item = QTreeWidgetItem(self.tree)
-                parent_item.setText(0, products[0][1] or "");
-                parent_item.setText(1, part_no)
-                parent_item.setText(2, products[0][3] or "");
-                parent_item.setText(3, f"{serial_range} ({total_count}개)")
-                parent_item.setText(4, products[0][5] or "");
-                parent_item.setText(5, purchase_no)
-                parent_item.setText(6, delivery_status)
+                parent_item.setText(0, part_no)
+                parent_item.setText(1, products[0][3] or "")
+                parent_item.setText(2, f"{serial_range} ({total_count}개)")
+                parent_item.setText(3, products[0][5] or "")
+                parent_item.setText(4, purchase_no)
+                parent_item.setText(5, delivery_status)
+                # Col 6(Order No) is specific to items, leave empty for group
+                parent_item.setText(7, products[0][1] or "") # Mfg Date
+                # Col 8, 9 (Dates) specific to items
                 p_fg = comp_fg if is_complete else incomp_fg;
                 p_bg = comp_bg if is_complete else incomp_bg
                 bold_font = parent_item.font(0);
@@ -621,10 +950,12 @@ class ProductWidget(QtWidgets.QWidget):
 
                 # (트리 생성 - 자식)
                 for product in products:
-                    # ✅ [수정] reserved_order_no 변수 추가 (15개 항목 언패킹)
+                    # ✅ [수정] unpacking - 17 columns (reserved_due_date added)
                     (product_id, manufacture_date, part_no, product_name, serial_no, manufacture_code,
                      purchase_no, purchase_id, is_delivered, delivered_at, delivery_invoice,
-                     consumed_by_product_id, is_assembly, reserved_order_no, latest_repair_status) = product
+                     consumed_by_product_id, is_assembly, reserved_order_no,
+                     reserved_due_date, latest_repair_status,
+                     recall_status, ship_datetime) = product
 
                     is_consumed = (consumed_by_product_id is not None)
 
@@ -635,8 +966,7 @@ class ProductWidget(QtWidgets.QWidget):
                     is_redelivered = (latest_repair_status and '재출고' in latest_repair_status)
 
                     child_item = QTreeWidgetItem(parent_item)
-                    child_item.setText(0, manufacture_date or "");
-                    child_item.setText(1, part_no or "")
+                    child_item.setText(0, part_no or "")
 
                     display_name = product_name or ""
 
@@ -654,59 +984,75 @@ class ProductWidget(QtWidgets.QWidget):
 
                     # ✅ [수정] S/N 및 제조코드 표시
                     if serial_no:
-                        child_item.setText(3, serial_no)
-                        child_item.setText(4, manufacture_code or "")
+                        child_item.setText(2, serial_no)
+                        child_item.setText(3, manufacture_code or "")
                     else:
                         # S/N이 없으면 '미확정' 표시 및 강조
-                        child_item.setText(3, "(미확정 재고)")
-                        child_item.setText(4, "-")
+                        child_item.setText(2, "(미확정 재고)")
+                        child_item.setText(3, "-")
                         # 폰트 색상 변경 (예: 파란색)
-                        child_item.setForeground(3, QBrush(QColor("#0066cc")))
+                        child_item.setForeground(2, QBrush(QColor("#0066cc")))
 
                     if is_assembly:
                         display_name += " (조립품)"
 
-                    child_item.setText(2, display_name)
-                    # ✅ [수정] S/N이 없으면 '미확정' 표시 및 파란색 강조
-                    if serial_no:
-                        child_item.setText(3, serial_no)
-                        child_item.setText(4, manufacture_code or "")
-                    else:
-                        child_item.setText(3, "(미확정 재고)")
-                        child_item.setText(4, "-")
-                        child_item.setForeground(3, QBrush(QColor("#0066cc")))  # 파란색
+                    child_item.setText(1, display_name)
+                    # S/N setting block already handled above (removed duplicate)
 
-                    child_item.setText(5, purchase_no or "")
+                    child_item.setText(4, purchase_no or "")
 
-                    # ✅ [수정] 납품상태 컬럼 처리 (재출고 추가)
                     if is_delivered:
                         status_text = "납품됨"
                         if delivery_invoice: status_text += f" ({delivery_invoice})"
-                        child_item.setText(6, status_text)
                     elif is_consumed:
                         status_text = "소모됨 (조립)"
-                        child_item.setText(6, status_text)
                     elif is_self_handled:
-                        child_item.setText(6, "자체처리 완료")
+                        status_text = "자체처리 완료" # ✅ [추가]
                     elif is_redelivered:
-                        # 재출고도 납품 완료된 것으로 표시
-                        child_item.setText(6, "재출고 완료")
-                    else:
-                        status_text = "미납품"
+                         # 재출고: '수리완료(재고)'에서 다시 나간 상태 -> '납품됨' 취급 or 별도 표시
+                         # 요청사항: "재출고 시 납품상태는 '납품됨' 혹은 '재출고완료' 등으로 표시" (여기선 '재출고'로 표시)
+                        status_text = "재출고 완료"
+                    else: 
+                        # latest_repair_status가 있으면 그것을, 없으면 '미납품' or '수리완료(재고)'
                         if latest_repair_status and '수리완료' in latest_repair_status:
-                            status_text = "수리완료(재고)"
-
-                        # ✅ [추가] 예약 정보 표시
-                        if reserved_order_no:
-                            status_text += f" [예약: {reserved_order_no}]"
+                             status_text = "수리완료(재고)"
                         else:
-                            status_text += " [자유재고]"
+                             status_text = "미납품"
 
-                        child_item.setText(6, status_text)
+                        # [비고] 기존에 상태 텍스트에 붙이던 예약 정보는 이제 별도 컬럼(주문번호)으로 이동하므로 제거
+                        # 다만, '자유재고' 표시는 유지할지 선택 (여기선 제거하고 깔끔하게 상태만 표시)
 
-                        # ✅ [추가] 예약된 재고는 텍스트 색상을 보라색 등으로 표시
+                    child_item.setText(5, recall_status or "-")
+                    if recall_status and recall_status != '완료':
+                        child_item.setForeground(5, QBrush(QColor("#E53935"))) # 빨간색 계열
+
+                    child_item.setText(6, status_text)
+                    
+                    # Col 7: 주문번호 (예약된 주문번호 표시)
+                    if reserved_order_no:
+                        child_item.setText(7, reserved_order_no)
+                    else:
+                        child_item.setText(7, "-") # 자유재고
+
+                    # Col 8: 검사일자
+                    child_item.setText(8, manufacture_date or "")
+
+                    # Col 9: 발송일자 (실제 출고일)
+                    ship_date_str = (ship_datetime or "")[:10]
+                    child_item.setText(9, ship_date_str)
+
+                    # Col 10: 납품일자 (최종 납기일)
+                    if reserved_due_date:
+                        if not is_delivered and reserved_order_no:
+                             child_item.setText(10, f"{reserved_due_date} (예정)")
+                        else:
+                             child_item.setText(10, reserved_due_date)
+                    else:
+                        child_item.setText(10, "")
+
+                    # ✅ [추가] 예약된 재고(미납품)는 주문번호 텍스트 색상을 보라색 등으로 표시
                     if reserved_order_no and not is_delivered:
-                        child_item.setForeground(6, QBrush(QColor("#6f42c1")))  # 보라색
+                        child_item.setForeground(7, QBrush(QColor("#6f42c1")))  # 보라색
 
                     # ✅ [수정] 색상 처리 (재출고도 완료 색상 적용)
                     # 납품됨 / 소모됨 / 자체처리 / 재출고 -> 모두 완료 색상
@@ -750,15 +1096,19 @@ class ProductWidget(QtWidgets.QWidget):
 
     def get_product_order_clause(self):
         """(새 함수) 제품 생산 트리의 정렬 기준을 SQL ORDER BY 절로 변환"""
-        # ["제조일자", "품목코드", "제품명", "시리얼번호", "제조코드", "발주번호", "납품상태"]
+        # ["품목코드", "제품명", "시리얼번호", "제조코드", "발주번호", "납품상태", "주문번호", "검사일자"]
         column_names = [
-            "pr.manufacture_date",  # 0
-            "pr.part_no",  # 1
-            "pr.product_name",  # 2
-            "pr.serial_no",  # 3
-            "pr.manufacture_code",  # 4
-            "p.purchase_no",  # 5
-            "is_delivered"  # 6
+            "pr.part_no",  # 0
+            "pr.product_name",  # 1
+            "pr.serial_no",  # 2
+            "pr.manufacture_code",  # 3
+            "p.purchase_no",  # 4
+            "(SELECT ri.item_status FROM recall_items ri JOIN recall_cases rc ON ri.recall_case_id = rc.id WHERE ri.product_id = pr.id ORDER BY rc.receipt_date DESC LIMIT 1)", # 5 (리콜상태)
+            "is_delivered",  # 6 (납품상태)
+            "(SELECT order_no FROM orders WHERE id = pr.reserved_order_id)", # 7 (주문제번호 정렬)
+            "pr.manufacture_date", # 8
+            "d.ship_datetime", # 9 (발송일자)
+            "(SELECT due_date FROM orders WHERE id = pr.reserved_order_id)" # 10 (납품일자)
         ]
 
         if 0 <= self.current_sort_column < len(column_names):
@@ -910,7 +1260,7 @@ class ProductWidget(QtWidgets.QWidget):
 
         form.addRow(QtWidgets.QLabel(""))
 
-        cb_update_date = QtWidgets.QCheckBox("제조일자 변경")
+        cb_update_date = QtWidgets.QCheckBox("검사일자 변경")
         edt_manufacture_date = QtWidgets.QLineEdit()
         edt_manufacture_date.setPlaceholderText("예: 2025-08-27")
         edt_manufacture_date.setEnabled(False)
@@ -920,7 +1270,7 @@ class ProductWidget(QtWidgets.QWidget):
 
         cb_update_code = QtWidgets.QCheckBox("제조코드 변경")
         edt_manufacture_code = QtWidgets.QLineEdit()
-        edt_manufacture_code.setPlaceholderText("예: 2534 (제조일자 입력 시 자동 생성)")
+        edt_manufacture_code.setPlaceholderText("예: 2534 (검사일자 입력 시 자동 생성)")
         edt_manufacture_code.setEnabled(False)
 
         def auto_generate_manufacture_code():
@@ -1062,6 +1412,51 @@ class ProductWidget(QtWidgets.QWidget):
                 f"제품 일괄 수정 중 오류가 발생했습니다:\n{str(e)}"
             )
 
+    def show_assembly_info(self, item):
+        """조립품에 사용된 하위 부품들의 발주번호 등 정보를 조회하여 보여줍니다."""
+        product_id = item.data(0, Qt.UserRole + 1)
+        if not product_id: return
+
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
+            
+            # 소비된 품목과 그 품목의 발주번호 조회
+            sql = """
+                SELECT 
+                    p.part_no, 
+                    p.product_name, 
+                    p.serial_no,
+                    pur.purchase_no
+                FROM products p
+                LEFT JOIN purchases pur ON p.purchase_id = pur.id
+                WHERE p.consumed_by_product_id = ?
+                ORDER BY p.part_no ASC
+            """
+            cur.execute(sql, (product_id,))
+            rows = cur.fetchall()
+            conn.close()
+
+            if not rows:
+                QtWidgets.QMessageBox.information(self, "조립 정보", "사용된 부품 정보가 없습니다.")
+                return
+
+            # 결과 메시지 구성
+            msg = f"<b>[{item.text(0)}] {item.text(1)}</b><br><br>사용된 부품 목록:<br>"
+            msg += "<table border='1' cellspacing='0' cellpadding='5'>"
+            msg += "<tr><th>품목코드</th><th>제품명</th><th>S/N</th><th>원자재 발주번호</th></tr>"
+            
+            for part_no, name, sn, purch_no in rows:
+                sn_display = sn if sn else "-"
+                purch_display = purch_no if purch_no else "-"
+                msg += f"<tr><td>{part_no}</td><td>{name}</td><td>{sn_display}</td><td>{purch_display}</td></tr>"
+            msg += "</table>"
+
+            QtWidgets.QMessageBox.information(self, "조립 부품 상세", msg)
+
+        except Exception as e:
+             QtWidgets.QMessageBox.critical(self, "오류", f"정보 조회 중 오류: {e}")
+
     def delete_product(self):
         product_data = self.get_selected_product()
         if not product_data:
@@ -1079,7 +1474,7 @@ class ProductWidget(QtWidgets.QWidget):
             f"품목코드: {part_no}\n"
             f"제품명: {product_name}\n"
             f"시리얼번호: {serial_no}\n"
-            f"제조일자: {manufacture_date}",
+            f"검사일자: {manufacture_date}",
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
             QtWidgets.QMessageBox.No
         )
@@ -1169,6 +1564,252 @@ class ProductWidget(QtWidgets.QWidget):
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "오류", f"제품 삭제 중 오류가 발생했습니다:\n{str(e)}")
 
+    # ✅ [변경] QC 문서 검토 기능 (비동기 Worker 사용)
+    def run_qc_review_folder(self):
+        """폴더를 선택하여 내부의 QC 문서를 일괄 검토합니다 (비동기)."""
+        current_item = self.tree.currentItem()
+        # 부모 아이템(그룹)이어야 함
+        if not current_item or current_item.parent():
+            QtWidgets.QMessageBox.warning(self, "경고", "상위 제품(그룹)을 선택한 상태에서 실행해주세요.")
+            return
+
+        folder_path = QtWidgets.QFileDialog.getExistingDirectory(self, "QC 문서가 있는 폴더 선택")
+        if not folder_path:
+            return
+
+        try:
+            # 1. 대상 파일 찾기 (*.zip, *.pdf)
+            target_files = []
+            
+            # ZIP 파일 검색
+            zip_pattern = os.path.join(folder_path, "**", "38-101A Test Sheet*.zip")
+            target_files.extend(glob.glob(zip_pattern, recursive=True))
+
+            # PDF 파일 검색 (38-101A Test Sheet 패턴)
+            pdf_pattern = os.path.join(folder_path, "**", "38-101A Test Sheet*.pdf")
+            target_files.extend(glob.glob(pdf_pattern, recursive=True))
+            
+            # 중복 제거
+            target_files = list(set(target_files))
+            
+            # ✅ [추가] "KT"로 시작하는 폴더 내부의 파일만 필터링
+            filtered_files = []
+            for f in target_files:
+                # 선택된 폴더(folder_path)를 기준으로 한 상대 경로 확인
+                rel_path = os.path.relpath(f, folder_path)
+                parts = rel_path.split(os.sep)
+                
+                # 상대 경로의 첫 번째 요소가 폴더이고, "KT"로 시작하는지 확인
+                # 예: "KT212/file.zip" -> parts[0]="KT212" (O)
+                # 예: "file.zip" -> parts[0]="file.zip" (X - 폴더가 아님, 혹은 루트 파일)
+                
+                # 파일이 루트에 있는 경우 parts 길이는 1
+                if len(parts) > 1 and parts[0].upper().startswith("KT"):
+                    filtered_files.append(f)
+            
+            target_files = filtered_files
+            
+            if not target_files:
+                QtWidgets.QMessageBox.warning(self, "파일 없음", "검토할 QC 문서(ZIP 또는 PDF)를 찾을 수 없습니다.")
+                return
+
+            # ✅ [추가] 파일 수와 제품 수(자식 노드) 일치 확인
+            child_count = current_item.childCount()
+            if len(target_files) != child_count:
+                QtWidgets.QMessageBox.critical(self, "오류", 
+                    f"검사 대상 파일 수({len(target_files)}개)와 선택된 제품 그룹의 제품 수({child_count}개)가 일치하지 않습니다.\n"
+                    "검사를 중단합니다.")
+                return
+
+            # ✅ 모드 설정
+            self.qc_mode = 'FOLDER'
+            self.qc_parent_item = current_item
+
+            self.start_qc_worker(target_files)
+
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "오류", f"폴더 처리 중 오류: {e}")
+
+    def run_qc_review_file(self):
+        """개별 파일(ZIP 또는 PDF)을 선택하여 검토합니다 (비동기)."""
+        current_item = self.tree.currentItem()
+        
+        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, 
+            "QC 문서(ZIP/PDF) 선택", 
+            "", 
+            "All Supported (*.zip *.pdf);;Zip Files (*.zip);;PDF Files (*.pdf)"
+        )
+        if not file_path:
+            return
+
+        # ✅ 모드 설정
+        self.qc_mode = 'FILE'
+        self.qc_target_item = current_item
+        
+        self.start_qc_worker([file_path])
+
+    def start_qc_worker(self, files):
+        """QCWorker 스레드를 시작하고 커스텀 로그 다이얼로그를 설정합니다."""
+        
+        # 0. 모델 선택
+        try:
+            available_models = qc_38_101A.get_available_models()
+        except:
+             available_models = ["models/gemini-2.0-flash", "models/gemini-1.5-flash"]
+             
+        if not available_models:
+             available_models = ["models/gemini-2.0-flash"]
+
+        # 기본값 설정 (2.0 flash 우선)
+        default_index = 0
+        for i, m in enumerate(available_models):
+            if "2.0-flash" in m:
+                default_index = i
+                break
+        
+        model_name, ok = QtWidgets.QInputDialog.getItem(
+            self, "Gemini 모델 선택", 
+            "사용할 AI 모델을 선택하세요:", 
+            available_models, default_index, False
+        )
+        
+        if not ok:
+            return
+
+        # 기존에 실행 중인 워커가 있다면 정리
+        if hasattr(self, 'qc_worker') and self.qc_worker is not None:
+            if self.qc_worker.isRunning():
+                self.qc_worker.cancel()
+                self.qc_worker.wait()
+        
+        self.qc_worker = QCWorker(files, model_name=model_name)
+        # ✅ 시그널 연결
+        self.qc_worker.analysis_result.connect(self.handle_qc_analysis_result)
+        
+        # ✅ Custom QC Progress Dialog 사용
+        self.qc_progress = QCProgressDialog(self, total_files=len(files))
+        self.qc_progress.show()
+        
+        # 다이얼로그의 Cancel 버튼 연결
+        self.qc_progress.rejected.connect(self.cancel_qc_worker)
+        
+        # Worker 시그널 연결
+        self.qc_worker.progress_changed.connect(self.qc_progress.update_progress)
+        self.qc_worker.log_signal.connect(self.qc_progress.append_log)
+        self.qc_worker.finished_signal.connect(self.on_qc_finished)
+        self.qc_worker.finished.connect(self.on_qc_thread_finished) # ✅ 스레드 종료 시 UI 정리
+        self.qc_worker.finished.connect(self.qc_worker.deleteLater)
+        
+        self.qc_worker.start()
+
+    def handle_qc_analysis_result(self, file_path, result_data):
+        """QC 분석 결과(S/N, 검사일자)를 받아서 제품 정보에 반영합니다."""
+        meta_info = result_data.get('meta_info', {})
+        serial_no = meta_info.get('serial_no')
+        date = meta_info.get('date')
+
+        if not serial_no:
+            return # S/N 추출 실패 시 패스
+
+        try:
+            if self.qc_mode == 'FOLDER':
+                # 폴더 모드: 일치하는 S/N 찾기 또는 빈 슬롯 할당
+                found_match = False
+                empty_sn_item = None
+                
+                # 1. 일치하는 S/N 검색
+                for i in range(self.qc_parent_item.childCount()):
+                    child = self.qc_parent_item.child(i)
+                    child_sn = child.text(3).strip()
+                    
+                    if child_sn == serial_no:
+                        # 일치 발견 -> 검사일자 업데이트
+                        p_id = child.data(0, Qt.UserRole + 1)
+                        update_product_qc_info(p_id, serial_no, date)
+                        child.setText(0, date) # UI 업데이트
+                        found_match = True
+                        break
+                        
+                    # 빈 슬롯(미확정) 첫 번째 후보 저장
+                    if (not child_sn or "미확정" in child_sn) and empty_sn_item is None:
+                        empty_sn_item = child
+
+                # 2. 일치하는 S/N이 없고, 빈 슬롯이 있다면 -> 할당
+                if not found_match and empty_sn_item:
+                    p_id = empty_sn_item.data(0, Qt.UserRole + 1)
+                    update_product_qc_info(p_id, serial_no, date)
+                    empty_sn_item.setText(3, serial_no)
+                    empty_sn_item.setText(0, date)
+
+            elif self.qc_mode == 'FILE':
+                # 파일 모드: 선택된 타겟 아이템 업데이트
+                target = self.qc_target_item
+                if not target: return
+
+                current_sn = target.text(3).strip()
+                p_id = target.data(0, Qt.UserRole + 1)
+                
+                # 케이스 1: 기존 S/N 없음 -> 즉시 업데이트
+                if not current_sn or "미확정" in current_sn:
+                    update_product_qc_info(p_id, serial_no, date)
+                    target.setText(3, serial_no)
+                    target.setText(0, date)
+                
+                # 케이스 2: 기존 S/N 일치 -> 날짜만 업데이트
+                elif current_sn == serial_no:
+                    update_product_qc_info(p_id, serial_no, date)
+                    target.setText(0, date)
+                
+                # 케이스 3: 기존 S/N 불일치 -> 사용자 확인
+                else:
+                    reply = QtWidgets.QMessageBox.question(self, "시리얼 불일치", 
+                        f"분석된 시리얼({serial_no})과 기존 시리얼({current_sn})이 다릅니다.\n업데이트하시겠습니까?",
+                        QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+                    if reply == QtWidgets.QMessageBox.Yes:
+                        update_product_qc_info(p_id, serial_no, date)
+                        target.setText(3, serial_no)
+                        target.setText(0, date)
+                        
+        except Exception as e:
+            print(f"Update QC Info Error: {e}")
+        
+    # def on_qc_progress(self, current_progress, message): # QCProgressDialog 내부 메서드로 대체됨
+    #     """진행률 업데이트"""
+    #     if self.qc_progress.wasCanceled():
+    #         return
+    #     self.qc_progress.setValue(current_progress)
+    #     self.qc_progress.setLabelText(message)
+
+    def on_qc_finished(self, success_count, total_count):
+        """완료 처리"""
+        if self.qc_progress:
+            self.qc_progress.set_finished()
+        
+        QtWidgets.QMessageBox.information(self, "완료", f"총 {total_count}개 중 {success_count}개 파일 분석 및 저장 완료")
+        self.qc_worker = None
+
+    def cancel_qc_worker(self):
+        """작업 취소 요청 (Non-blocking)"""
+        if hasattr(self, 'qc_worker') and self.qc_worker and self.qc_worker.isRunning():
+            self.qc_worker.cancel()
+            # self.qc_worker.wait() # ❌ Blocking 제거: 즉시 UI 반응
+            
+            if self.qc_progress:
+                self.qc_progress.status_label.setText("🛑 작업을 중지하는 중입니다... 잠시만 기다려주세요.")
+                self.qc_progress.btn_cancel.setEnabled(False) # 중복 클릭 방지
+
+    def on_qc_thread_finished(self):
+        """스레드가 실제로 종료되었을 때 호출됨"""
+        if self.qc_progress:
+            self.qc_progress.close()
+            self.qc_progress = None
+        
+        if self.qc_worker and self.qc_worker.is_cancelled:
+             QtWidgets.QMessageBox.information(self, "중지됨", "작업이 사용자에 의해 중지되었습니다.")
+        
+        self.qc_worker = None
+
 
 class ProductDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, is_edit=False, product_data=None, prefill_data=None):
@@ -1216,7 +1857,7 @@ class ProductDialog(QtWidgets.QDialog):
         self.edt_serial_no.textChanged.connect(lambda: self.edt_serial_no.setStyleSheet(""))
 
         self.edt_manufacture_code = QtWidgets.QLineEdit()
-        self.edt_manufacture_code.setPlaceholderText("예: 2534 (YY주차) - 제조일자 입력 시 자동 생성")
+        self.edt_manufacture_code.setPlaceholderText("예: 2534 (YY주차) - 검사일자 입력 시 자동 생성")
 
         self.sp_production_qty = QtWidgets.QSpinBox()
         self.sp_production_qty.setRange(1, 1_000_000)
@@ -1229,7 +1870,7 @@ class ProductDialog(QtWidgets.QDialog):
 
         # ✅ [수정] 신규 모드일 때는 날짜/S/N 입력란 숨김 처리
         if self.is_edit:
-            form.addRow("제조일자", self.edt_manufacture_date)
+            form.addRow("검사일자", self.edt_manufacture_date)
 
         form.addRow("품목코드*", self.edt_item_code)
         form.addRow("제품명*", self.edt_product_name)
@@ -1250,9 +1891,15 @@ class ProductDialog(QtWidgets.QDialog):
         mode_layout = QtWidgets.QHBoxLayout(self.production_mode_group)
         self.radio_simple = QtWidgets.QRadioButton("단순 생산 (재고 소모 없음)")
         self.radio_assembly = QtWidgets.QRadioButton("조립 생산 (BOM 부품 재고 소모)")
-        self.radio_simple.setChecked(True)
+        # ✅ [추가] 재고 부족 무시 체크박스 (조립 생산 시 활성화됨)
+        self.cb_ignore_shortage = QtWidgets.QCheckBox("재고 부족 무시 (강제 생산)")
+        self.cb_ignore_shortage.setStyleSheet("color: #d63384; font-weight: bold;")
+        self.cb_ignore_shortage.setToolTip("체크 시, 재고가 부족하거나 없는 부품이 있어도 무시하고 제품을 생산합니다.")
+        self.cb_ignore_shortage.setVisible(False) # 기본 숨김
+
         mode_layout.addWidget(self.radio_simple)
         mode_layout.addWidget(self.radio_assembly)
+        mode_layout.addWidget(self.cb_ignore_shortage) # ✅ 추가됨
         self.production_mode_group.setVisible(False)  # 기본값은 숨김
 
         # 라디오 버튼 클릭 시 UI 변경
@@ -1263,7 +1910,19 @@ class ProductDialog(QtWidgets.QDialog):
 
         # ✅ [추가 시작] BOM 부품 선택 그룹
         self.bom_group = QtWidgets.QGroupBox("BOM 부품 선택 (조립)")
-        self.bom_layout = QtWidgets.QVBoxLayout(self.bom_group)
+        bom_group_layout = QtWidgets.QVBoxLayout(self.bom_group)
+
+        scroll_area = QtWidgets.QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setMaximumHeight(350)  # 높이 제한
+        scroll_area.setFrameShape(QtWidgets.QFrame.NoFrame)
+
+        scroll_widget = QtWidgets.QWidget()
+        self.bom_layout = QtWidgets.QVBoxLayout(scroll_widget)
+
+        scroll_area.setWidget(scroll_widget)
+        bom_group_layout.addWidget(scroll_area)
+
         self.bom_group.setVisible(False)  # 기본값은 숨김
         form.addRow(self.bom_group)
         # ✅ [추가 끝]
@@ -1273,6 +1932,7 @@ class ProductDialog(QtWidgets.QDialog):
         purchase_label.setStyleSheet("font-weight: bold;")
         form.addRow(purchase_label)
 
+        # 콤보박스
         self.purchase_combo = QtWidgets.QComboBox()
         self.purchase_combo.addItem("선택 안함", None)
         self.load_available_purchases()
@@ -1367,6 +2027,9 @@ class ProductDialog(QtWidgets.QDialog):
 
         # 1. BOM 그룹 (부품 선택)
         self.bom_group.setVisible(is_assembly)
+        
+        # ✅ [추가] 재고 부족 무시 체크박스 표시
+        self.cb_ignore_shortage.setVisible(is_assembly)
 
         # 2. 생산 수량
         self.sp_production_qty.setEnabled(not is_assembly)  # 조립은 1개, 단순생산은 N개
@@ -1542,7 +2205,20 @@ class ProductDialog(QtWidgets.QDialog):
                         serial_str = f" (S/N: {first_available_serial}~)"
                     stock_str = f"재고: {stock_qty}개{serial_str}"
 
-                margin_str = f"할당 여유: {allocation_margin}개"
+                # ✅ [수정] allocation_margin이 이제 dict {item_code: qty} 형태이므로 처리
+                if isinstance(allocation_margin, dict):
+                    # 현재 입력된 품목코드가 있다면 그 품목의 여유분만 표시, 없다면 전체 합계?
+                    # ProductDialog에서는 품목코드가 바뀔 때마다 리스트를 갱신하지 않으므로,
+                    # 우선은 "전체 여유분의 합" 또는 "대표값"을 표시하는 게 안전함.
+                    # 하지만 유저는 '특정 PO'를 찾고 있으므로, PO의 존재 여부가 중요함.
+                    margin_val = sum(allocation_margin.values())
+                    margin_str = f"할당 여유: {margin_val}개"
+                    
+                    # 상세 정보(각 품목별 여유)를 툴팁이나 괄호 안에 넣을 수도 있지만 공간 제약.
+                else:
+                    margin_val = allocation_margin # int fallback
+                    margin_str = f"할당 여유: {margin_val}개"
+
                 order_str = f"총 발주: {ordered_qty}개"
 
                 # (총 발주 / 재고 + S/N / 할당 여유) 순서로 표시
@@ -1550,8 +2226,8 @@ class ProductDialog(QtWidgets.QDialog):
 
                 self.purchase_combo.addItem(display_text, purchase_id)
 
-                # ✅ 빨간색 글씨 적용
-                if stock_qty < allocation_margin:
+                # ✅ 빨간색 글씨 적용 (재고 < 할당량 이면 부족 상태)
+                if stock_qty < margin_val:
                     # 콤보박스의 마지막 아이템(방금 추가한 아이템)의 인덱스를 가져옴
                     last_index = self.purchase_combo.count() - 1
                     self.purchase_combo.setItemData(last_index, QBrush(QColor("#dc3545")), Qt.ForegroundRole)
@@ -1601,7 +2277,7 @@ class ProductDialog(QtWidgets.QDialog):
             manufacture_date = parse_due_text(manufacture_date_raw) if manufacture_date_raw else None
 
             if manufacture_date_raw and not manufacture_date:
-                QMessageBox.warning(self, "제조일자", "제조일자 형식이 올바르지 않습니다.")
+                QMessageBox.warning(self, "검사일자", "검사일자 형식이 올바르지 않습니다.")
                 return
 
         manufacture_code = self.edt_manufacture_code.text().strip() or None
@@ -1660,15 +2336,26 @@ class ProductDialog(QtWidgets.QDialog):
                     child_code = req['child_code']
                     qty_req = req['qty_req']
 
+                    # ✅ [추가] 소요량이 0이면 검증 및 소모 로직 건너뜀
+                    if qty_req == 0:
+                        continue
+
                     if child_code not in self.bom_widgets:
+                        # ✅ [수정] 강제 생산 체크 시, 재고가 아예 없는 부품은 건너뜀 (오류 아님)
+                        if self.cb_ignore_shortage.isChecked():
+                            continue
+
                         QMessageBox.critical(self, "조립 오류", f"필요한 부품 '{child_code}'의 재고가 없습니다.")
                         return
 
                     list_widget = self.bom_widgets[child_code]
                     selected_items = list_widget.selectedItems()
 
-                    # ✅ [수정] 선택된 항목이 없으면 더 명확한 오류 메시지
+                    # ✅ [수정] 선택된 항목이 없으면 더 명확한 오류 메시지 (강제 생산 시 예외)
                     if len(selected_items) == 0:
+                        if self.cb_ignore_shortage.isChecked():
+                             continue # 강제 생산 시에는 미선택 허용
+
                         QMessageBox.critical(
                             self, "부품 미선택",
                             f"'{child_code}' 부품을 선택해주세요.\n\n"
@@ -1678,23 +2365,29 @@ class ProductDialog(QtWidgets.QDialog):
                         return
 
                     if len(selected_items) != qty_req:
-                        QMessageBox.warning(self, "수량 오류",
-                                            f"'{child_code}'의 필요 수량({qty_req}개)과\n"
-                                            f"선택한 재고 수량({len(selected_items)}개)이 일치하지 않습니다."
-                                            )
-                        return
+                        # ✅ [수정] 강제 생산 시에는 수량 불일치 허용 (경고 없이 진행하거나, 경고 후 진행? -> 유저는 "무시"를 원함)
+                        if self.cb_ignore_shortage.isChecked():
+                             pass # 수량 불일치 허용
+                        else:
+                            QMessageBox.warning(self, "수량 오류",
+                                                f"'{child_code}'의 필요 수량({qty_req}개)과\n"
+                                                f"선택한 재고 수량({len(selected_items)}개)이 일치하지 않습니다."
+                                                )
+                            return
 
                     for item in selected_items:
                         consumed_items_ids.append(item.data(Qt.UserRole))
 
-                # ✅ [추가] 최종 검증: consumed_items_ids가 비어있으면 안 됨
+                # ✅ [추가] 최종 검증: consumed_items_ids가 비어있으면 안 됨 
+                # (단, 강제 생산 모드에서는 부품 없이도 생산 가능해야 함)
                 if not consumed_items_ids:
-                    QMessageBox.critical(
-                        self, "조립 오류",
-                        "조립에 필요한 부품이 선택되지 않았습니다.\n"
-                        "각 부품의 재고 목록에서 사용할 제품을 선택해주세요."
-                    )
-                    return
+                    if not self.cb_ignore_shortage.isChecked():
+                        QMessageBox.critical(
+                            self, "조립 오류",
+                            "조립에 필요한 부품이 선택되지 않았습니다.\n"
+                            "각 부품의 재고 목록에서 사용할 제품을 선택해주세요."
+                        )
+                        return
 
             # 3. (분기) 단순 생산인가?
             else:
@@ -1753,7 +2446,7 @@ class ProductDialog(QtWidgets.QDialog):
                     break
             self.purchase_combo.setEnabled(False)  # 발주번호 변경 방지
 
-        # 제조일자 필드에 포커스
+        # 검사일자 필드에 포커스
         self.edt_manufacture_date.setFocus()
 
 
@@ -1793,7 +2486,7 @@ class AssignProductInfoDialog(QDialog):
         except:
             self.sp_start_sn.setValue(1)
 
-        form.addRow("제조일자:", self.edt_date)
+        form.addRow("검사일자:", self.edt_date)
         form.addRow("제조코드:", self.edt_code)
         form.addRow("시작 S/N:", self.sp_start_sn)
 

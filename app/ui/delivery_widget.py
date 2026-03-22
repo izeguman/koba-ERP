@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (QHeaderView, QTableWidgetItem, QMessageBox, QList
                                QDialog, QVBoxLayout, QListWidget, QTableWidget,
                                QDialogButtonBox, QAbstractItemView, QTreeWidget, QTreeWidgetItem,
                                QFormLayout, QLineEdit, QCheckBox, QLabel)
-from PySide6.QtCore import Qt, QSignalBlocker
+from PySide6.QtCore import Qt, QSignalBlocker, QTimer, QSettings
 from PySide6.QtGui import QBrush, QColor, QFont
 
 from datetime import datetime
@@ -23,11 +23,13 @@ from ..db import (
     # 수리 이력 업데이트 관련 함수 (revert 추가됨)
     update_repair_redelivery_status,
     update_repair_status_on_delivery,
-    revert_repair_status_on_delivery_delete
+    revert_repair_status_on_delivery_delete,
+    get_product_master_by_code
 )
 from .utils import parse_datetime_text, apply_table_resize_policy
 from ..db import is_purchase_completed, mark_products_as_delivered, unmark_products_as_delivered
 from .autocomplete_widgets import AutoCompleteLineEdit
+from ..logic.pallet_calculator import PalletCalculator
 
 
 def get_available_orders_for_purchase(delivery_id_to_include=None):
@@ -113,9 +115,9 @@ class DeliveryWidget(QtWidgets.QWidget):
         title_layout.addWidget(btn_new)
         title_layout.addWidget(self.btn_refresh)
         title_layout.addWidget(self.btn_show_completed)
-        self.table = QtWidgets.QTableWidget(0, 9)
+        self.table = QtWidgets.QTableWidget(0, 10) # 컬럼 1개 추가 (총 10개)
         self.table.setHorizontalHeaderLabels(
-            ["발송일시", "인보이스번호", "총수량", "품목수", "제품명", "운송사", "2차포장", "연결 정보", "청구완료"]
+            ["발송일시", "인보이스번호", "총수량", "품목수", "제품명", "운송사", "2차포장", "연결 정보", "총 판매금액(엔)", "청구완료"]
         )
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
@@ -127,7 +129,7 @@ class DeliveryWidget(QtWidgets.QWidget):
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.show_context_menu)
         header = self.table.horizontalHeader()
-        for col in range(9):
+        for col in range(10):
             header.setSectionResizeMode(col, QHeaderView.Interactive)
 
         self.table.setColumnWidth(0, 140);
@@ -138,7 +140,8 @@ class DeliveryWidget(QtWidgets.QWidget):
         self.table.setColumnWidth(5, 100)
         self.table.setColumnWidth(6, 150);
         self.table.setColumnWidth(7, 280)
-        self.table.setColumnWidth(8, 80)
+        self.table.setColumnWidth(8, 120) # 판매금액
+        self.table.setColumnWidth(9, 80)  # 청구완료
 
         if self.settings:
             self.restore_column_widths()
@@ -149,8 +152,45 @@ class DeliveryWidget(QtWidgets.QWidget):
         layout.addLayout(title_layout)
         layout.addWidget(self.table)
         apply_table_resize_policy(self.table)
+        
+        # ✅ [수정] 가로 스크롤바 활성화 (utils 정책 오버라이드)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table.horizontalHeader().setStretchLastSection(False)
+
+    def set_privacy_mode(self, enabled: bool):
+        """재무 정보 숨기기 설정"""
+        # 8번 컬럼: 총 판매금액
+        
+        if enabled:
+            # 숨기기 전에 현재 폭을 메모리에 저장 (Settings 아님)
+            # 이미 숨겨진 상태가 아닐 때만 저장해야 0으로 저장되는 것 방지
+            if not self.table.isColumnHidden(8):
+                self._temp_widths = [self.table.columnWidth(col) for col in range(self.table.columnCount())]
+            
+            self.table.setColumnHidden(8, True)
+        else:
+            # 보이기 전에 숨김 해제
+            self.table.setColumnHidden(8, False)
+            
+            # 메모리에 저장된 폭이 있다면 복원
+            if hasattr(self, '_temp_widths') and self._temp_widths:
+                # 리사이즈 시그널을 차단하여 AdjacentColumnResizer 간섭 방지
+                header = self.table.horizontalHeader()
+                blocker = QSignalBlocker(header)
+                try:
+                    for col, width in enumerate(self._temp_widths):
+                        if col < self.table.columnCount():
+                            # 숨겨졌던 8번 컬럼이 0이면 안되므로 최소값 보정 (혹시 모를 안전장치)
+                            if col == 8 and width < 50: width = 100
+                            self.table.setColumnWidth(col, width)
+                finally:
+                    blocker.unblock()
+                        
+                # 복원 후 임시 변수 초기화 (선택사항, 유지해도 무방하나 안전하게)
+                # self._temp_widths = None 
 
     def toggle_show_completed(self, checked):
+
         self.show_completed = checked
         self.btn_show_completed.setText("전체보기" if checked else "미완료만")
         self.load_delivery_list()
@@ -233,7 +273,14 @@ class DeliveryWidget(QtWidgets.QWidget):
                     (SELECT GROUP_CONCAT(di.serial_no || ' | ' || COALESCE(di.manufacture_code, '') || ' | ' || di.product_name, ', ')
                      FROM delivery_items di
                      WHERE di.delivery_id = d.id AND di.order_id IS NULL
-                    ) AS stock_info
+                    ) AS stock_info,
+                    
+                    -- ✅ [추가] 총 판매금액 (주문 연결된 건만 계산)
+                    (SELECT SUM(di.qty * COALESCE(oi.unit_price_cents, 0)) / 100
+                     FROM delivery_items di
+                     LEFT JOIN order_items oi ON di.order_id = oi.order_id AND di.item_code = oi.item_code
+                     WHERE di.delivery_id = d.id AND di.order_id IS NOT NULL
+                    ) AS total_sales_amt
 
                 FROM deliveries d
             """
@@ -260,6 +307,7 @@ class DeliveryWidget(QtWidgets.QWidget):
                     item_count,
                     product_names,
                     stock_info,  # ✅ [추가] SQL에서 받아온 재고 정보
+                    total_sales_amt # ✅ [추가] 총 판매금액
                 ) = row_data
 
                 if is_completed and not self.show_completed:
@@ -329,6 +377,12 @@ class DeliveryWidget(QtWidgets.QWidget):
 
                 item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
                 self.table.setItem(row_position, 7, item)
+                
+                # ✅ [추가] 총 판매금액 (8열)
+                total_sales_amt = total_sales_amt or 0
+                item_amt = QTableWidgetItem(f"{total_sales_amt:,}")
+                item_amt.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.table.setItem(row_position, 8, item_amt)
 
                 checkbox = QtWidgets.QCheckBox()
                 checkbox.setChecked(bool(is_completed))
@@ -342,7 +396,7 @@ class DeliveryWidget(QtWidgets.QWidget):
                 checkbox_layout.addWidget(checkbox)
                 checkbox_layout.setAlignment(Qt.AlignCenter)
                 checkbox_layout.setContentsMargins(0, 0, 0, 0)
-                self.table.setCellWidget(row_position, 8, checkbox_widget)
+                self.table.setCellWidget(row_position, 9, checkbox_widget) # 9열로 이동
 
                 fg_color = QColor(comp_fg if is_completed else incomp_fg)
                 bg_color = QColor(comp_bg if is_completed else incomp_bg)
@@ -469,11 +523,20 @@ class DeliveryWidget(QtWidgets.QWidget):
     def show_context_menu(self, position):
         if self.table.itemAt(position) is None: return
         menu = QtWidgets.QMenu(self)
+        
+        # menu.addAction("발주서 작성", self.open_add_order_dialog_from_context) # Not needed here
+        menu.addAction("청구서 작성", self.create_invoice_document)
+        menu.addSeparator()
+        menu.addAction("납품 인보이스 작성 (일반)", lambda: self.create_commercial_invoice(is_repair=False))
+        menu.addAction("납품 인보이스 작성 (수리품)", lambda: self.create_commercial_invoice(is_repair=True))
+        menu.addSeparator()
+        
         edit_action = menu.addAction("수정");
         edit_action.triggered.connect(self.edit_delivery)
         delete_action = menu.addAction("삭제");
         delete_action.triggered.connect(self.delete_delivery)
-        menu.exec_(self.table.mapToGlobal(position))
+        
+        menu.exec(self.table.viewport().mapToGlobal(position))
 
 
     def delete_delivery(self):
@@ -508,6 +571,225 @@ class DeliveryWidget(QtWidgets.QWidget):
             except Exception as e:
                 QMessageBox.critical(self, "오류", f"삭제 중 오류가 발생했습니다:\n{e}")
 
+    def get_selected_products(self):
+        """선택된 납품에 포함된 제품 목록을 반환합니다."""
+        delivery_id = self.get_selected_delivery_id()
+        if not delivery_id:
+            return []
+
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
+            # delivery_items 테이블에는 unit_price, is_repair_return 등이 없을 수 있으므로
+            # products 및 order_items 테이블 조인/서브쿼리로 데이터 확보
+            cur.execute("""
+                SELECT 
+                    di.item_code,
+                    di.serial_no,
+                    di.product_name,
+                    di.manufacture_code,
+                    di.qty,
+                    (SELECT unit_price_cents FROM order_items oi WHERE oi.order_id = di.order_id AND oi.item_code = di.item_code LIMIT 1) as unit_price_cents,
+                    (SELECT currency FROM order_items oi WHERE oi.order_id = di.order_id AND oi.item_code = di.item_code LIMIT 1) as currency,
+                    (SELECT description FROM product_master pm WHERE pm.item_code = di.item_code ORDER BY pm.id DESC LIMIT 1) as description,
+                    (SELECT status 
+                     FROM product_repairs pr 
+                     WHERE pr.product_id = (SELECT id FROM products WHERE serial_no = di.serial_no ORDER BY id DESC LIMIT 1) 
+                     ORDER BY pr.id DESC LIMIT 1
+                    ) as latest_repair_status,
+                    
+                    -- [수정] 박스 정보: Product Master 우선 사용 (최신 정보 반영) -> 없으면 Delivery Item 값 사용
+                    COALESCE(
+                        (SELECT items_per_box FROM product_master pm WHERE pm.item_code = di.item_code LIMIT 1),
+                        NULLIF(di.items_per_box, 0), 1
+                    ) as items_per_box,
+                    
+                    COALESCE(
+                        (SELECT box_weight FROM product_master pm WHERE pm.item_code = di.item_code LIMIT 1),
+                        NULLIF(di.box_weight, 0), 0.0
+                    ) as box_weight,
+                    
+                    di.order_id,
+                    (SELECT unit_price_jpy FROM product_master pm WHERE pm.item_code = di.item_code ORDER BY pm.id DESC LIMIT 1) as unit_price_jpy
+                FROM delivery_items di
+                WHERE di.delivery_id = ?
+            """, (delivery_id,))
+            
+            products_data = []
+            for row in cur.fetchall():
+                # 수리품 여부 판단 (repair_status가 존재하면 수리품으로 간주)
+                # 상태가 '접수', '수리중' 등이어도 납품 목록에 있다면 반송/출고 의도이므로 포함
+                repair_status = row[8] or ""
+                is_repair = bool(repair_status)
+                
+                # 시리얼 번호가 있으면 수량은 1로 고정
+                qty = row[4]
+                if row[1] and str(row[1]).strip():
+                    qty = 1
+
+                # 단가 계산 (cents 우선, 없으면 master jpy 사용)
+                # cents는 100단위이므로 / 100, master price는 JPY 그대로 사용
+                u_price_cents = row[5]
+                u_price_jpy = row[12]
+                
+                if u_price_cents is not None:
+                     unit_price = u_price_cents / 100.0
+                elif u_price_jpy is not None:
+                     # 사용자 DB에 마스터 단가도 센트 단위(x100)로 저장되어 있는 것으로 추정됨
+                     unit_price = float(u_price_jpy) / 100.0
+                else:
+                     unit_price = 0.0
+
+                products_data.append({
+                    "item_code": row[0],
+                    "serial_no": row[1],
+                    "product_name": row[2],
+                    "manufacturer_code": row[3],
+                    "quantity": qty,
+                    "unit_price": unit_price,
+                    "currency": row[6] or 'JPY',
+                    "description": row[7],
+                    "latest_repair_status": repair_status,
+                    "is_repair_return": is_repair,
+                    "items_per_box": row[9] or 1,
+                    "box_weight": row[10] or 0.0,
+                    "order_id": row[11]
+                })
+            conn.close()
+            return products_data
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"선택된 납품의 제품 정보를 불러오는 중 오류 발생:\n{e}")
+            return []
+
+    def create_commercial_invoice(self, is_repair=False):
+        """납품 인보이스 생성 (Commercial Invoice)"""
+        delivery_id = self.get_selected_delivery_id()
+        if not delivery_id:
+             QMessageBox.information(self, "알림", "인보이스를 작성할 납품을 선택해주세요.")
+             return
+
+        items = self.get_selected_products()
+        if not items:
+            return 
+
+        # 필터링 제거: 사용자가 수리품 인보이스를 선택했든 일반 인보이스를 선택했든, 
+        # 해당 납품 건에 포함된 '모든' 품목을 인보이스에 출력합니다.
+        # 사용자가 알아서 구분하여 납품을 생성했다고 가정합니다.
+        filtered_items = items
+
+
+        try:
+            # 포장/팔레트 정보 조회
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT invoice_no, secondary_packaging FROM deliveries WHERE id = ?", (delivery_id,))
+            row = cur.fetchone()
+            # ✅ [수정] DB에 저장된 인보이스 번호를 그대로 사용 (사용자 입력 제거)
+            invoice_no = row[0] if row else ""
+            secondary_packaging = row[1] if row else ""
+            conn.close()
+
+            if not invoice_no:
+                 QMessageBox.warning(self, "알림", "선택된 납품에 인보이스 번호가 없습니다.")
+                 return
+
+            from .document_generator import generate_commercial_invoice
+            import os
+
+            # 생성 호출
+            result_path = generate_commercial_invoice(
+                filtered_items, 
+                is_repair_return=is_repair, 
+                secondary_packaging=secondary_packaging,
+                manual_invoice_no=invoice_no
+            )
+            
+            if str(result_path).startswith("인보이스 생성 실패"):
+                QMessageBox.warning(self, "오류", result_path)
+            else:
+                # 성공 - 완료 다이얼로그
+                msg_box = QMessageBox(self)
+                msg_box.setWindowTitle("완료")
+                msg_box.setText(f"인보이스가 생성되었습니다.\n{os.path.basename(result_path)}")
+                
+                open_folder_btn = msg_box.addButton("폴더 열기", QMessageBox.ActionRole)
+                ok_btn = msg_box.addButton("확인", QMessageBox.AcceptRole)
+                msg_box.setDefaultButton(ok_btn)
+                
+                msg_box.exec()
+                
+                if msg_box.clickedButton() == open_folder_btn:
+                    folder = os.path.dirname(result_path)
+                    os.startfile(folder)
+
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"상업 인보이스 생성 중 오류 발생:\n{str(e)}")
+            import traceback
+            traceback.print_exc()
+
+    def create_invoice_document(self):
+        """청구서 작성 (엑셀 생성)"""
+        delivery_id = self.get_selected_delivery_id()
+        if not delivery_id:
+            QMessageBox.information(self, "알림", "청구서를 작성할 납품을 선택해주세요.")
+            return
+            
+        try:
+            from .utils import resource_path
+            from .document_generator import generate_invoice, get_next_invoice_serial, get_delivery_serial_rank
+            import os
+            from datetime import datetime
+            
+            # 1. 일련번호 추천값 조회
+            today = datetime.now()
+            ymd_full = today.strftime("%Y%m%d")
+            suggested_serial = get_delivery_serial_rank(delivery_id)
+
+            # 2. 사용자 입력
+            serial, ok = QtWidgets.QInputDialog.getText(
+                 self,
+                 "청구서 작성",
+                 f"청구서 일련번호를 입력하세요 (KI{ymd_full}-xxx)\n예: 001, 002...",
+                 QtWidgets.QLineEdit.Normal,
+                 suggested_serial
+            )
+            
+            if not ok or not serial:
+                 return
+            
+            template_path = resource_path("app/templete/ULVAC-PHI_Invoice_.xlsx")
+            if not os.path.exists(template_path):
+                 # Fallback
+                 fallback = "ULVAC-PHI_Invoice_.xlsx"
+                 if os.path.exists(fallback):
+                     template_path = fallback
+                 else:
+                     QMessageBox.critical(self, "오류", f"템플릿 파일을 찾을 수 없습니다:\n{template_path}")
+                     return
+
+            generated_files = generate_invoice(delivery_id, template_path, invoice_serial=serial)
+            
+            if not generated_files:
+                QMessageBox.information(self, "알림", "생성된 청구서가 없습니다.\n(연결된 주문이 없거나 품목이 없을 수 있습니다)")
+                return
+                
+            msg_box = QtWidgets.QMessageBox(self)
+            msg_box.setWindowTitle("완료")
+            msg_box.setText(f"총 {len(generated_files)}개의 청구서 파일이 생성되었습니다.\n\n저장 경로: {os.path.dirname(generated_files[0])}")
+            
+            open_folder_btn = msg_box.addButton("폴더 열기", QtWidgets.QMessageBox.ActionRole)
+            ok_btn = msg_box.addButton("확인", QtWidgets.QMessageBox.AcceptRole)
+            
+            msg_box.exec()
+            
+            if msg_box.clickedButton() == open_folder_btn:
+                folder_path = os.path.dirname(generated_files[0])
+                os.startfile(folder_path)
+
+        except Exception as e:
+             QMessageBox.critical(self, "오류", f"청구서 생성 중 오류 발생:\n{str(e)}")
+             import traceback
+             traceback.print_exc()
 
 # [신규] 주문 -> 발주 -> 제품을 선택하는 다이얼로그
 class AddProductsFromPurchaseDialog(QDialog):
@@ -709,9 +991,23 @@ class AddProductsFromPurchaseDialog(QDialog):
             products = cur.fetchall()
             conn.close()
 
+            # ✅ [추가] 주문 품목 단가 조회
+            price_map = {}
+            if self.order_id:
+                try:
+                    p_rows = query_all("SELECT item_code, unit_price_cents FROM order_items WHERE order_id = ?", (self.order_id,))
+                    for ic, price in p_rows:
+                        price_map[ic] = price
+                except Exception as e:
+                    print(f"단가 조회 실패: {e}")
+
             self.product_table.setRowCount(len(products))
             for row, product in enumerate(products):
                 product_dict = dict(zip(['id', 'part_no', 'product_name', 'serial_no', 'manufacture_code'], product))
+                
+                # 단가 할당
+                item_c = product_dict.get('part_no') # part_no가 item_code
+                product_dict['unit_price'] = price_map.get(item_c, 0) / 100
 
                 chk_item = QTableWidgetItem()
                 chk_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
@@ -766,15 +1062,14 @@ class DeliveryDialog(QDialog):
         self.setup_ui()
 
         if not self.is_edit and not self.is_repair_delivery:
-            use_auto_num = self.settings.value("auto_numbering/enable_delivery_no", False, type=bool)
-            if use_auto_num:
-                try:
-                    today = datetime.now()
-                    next_no = get_next_delivery_number(today.year, today.month, today.day)
-                    self.edt_invoice_no.setText(next_no)
-                    self.edt_invoice_no.setStyleSheet("background-color: #fffacd;")
-                except Exception as e:
-                    print(f"추천 납품번호 생성 실패: {e}")
+            # 설정 값과 무관하게 항상 자동 생성 (사용자 요청)
+            try:
+                today = datetime.now()
+                next_no = get_next_delivery_number(today.year, today.month, today.day)
+                self.edt_invoice_no.setText(next_no)
+                self.edt_invoice_no.setStyleSheet("background-color: #fffacd;")
+            except Exception as e:
+                print(f"추천 납품번호 생성 실패: {e}")
 
         if self.is_edit and self.delivery_id:
             self.load_delivery_data()
@@ -785,8 +1080,8 @@ class DeliveryDialog(QDialog):
 
         if self.settings:
             geometry = self.settings.value("delivery_dialog/geometry")
-            if geometry:
-                self.restoreGeometry(geometry)
+            # if geometry:
+            #     self.restoreGeometry(geometry)
 
     def setup_ui(self):
         title = "납품 수정" if self.is_edit else "새 납품 추가"
@@ -838,13 +1133,20 @@ class DeliveryDialog(QDialog):
         self.item_tree.customContextMenuRequested.connect(self.show_tree_context_menu)
 
         header = self.item_tree.header()
-        header.setSectionResizeMode(0, QHeaderView.Interactive)
-        header.setSectionResizeMode(1, QHeaderView.Interactive)
         self.item_tree.setColumnWidth(0, 350)
         self.item_tree.setColumnWidth(1, 120)
 
-        self.restore_column_widths()
-        header.sectionResized.connect(self.save_column_widths)
+        apply_table_resize_policy(self.item_tree)
+
+        # ✅ [수정] 가로 스크롤바 활성화 (utils 정책 오버라이드)
+        self.item_tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.item_tree.header().setStretchLastSection(False)
+
+        # ✅ [추가] 컬럼 폭 저장 및 복원
+        if self.settings:
+            self.restore_column_widths()
+        
+        self.item_tree.header().sectionResized.connect(self.save_column_widths)
 
         item_button_layout = QtWidgets.QHBoxLayout()
         self.btn_add_item = QtWidgets.QPushButton("+ 주문에서 품목 추가")
@@ -858,83 +1160,79 @@ class DeliveryDialog(QDialog):
         item_button_layout.addStretch()
 
         item_layout.addWidget(self.item_tree)
+
+        # ✅ [추가] 팔레트 계산 버튼
+        self.btn_pallet_calc = QtWidgets.QPushButton("📦 포장/팔레트 계산")
+        self.btn_pallet_calc.setToolTip("선택한 품목의 포장 정보를 입력하고 팔레트 수량을 계산합니다.")
+        self.btn_pallet_calc.clicked.connect(self.open_pallet_calc_dialog)
+        item_button_layout.insertWidget(0, self.btn_pallet_calc) # 맨 앞에 추가
+        
         item_layout.addLayout(item_button_layout)
 
+        # ✅ [추가] 총 판매 가액 표시
+        self.lbl_total_sales = QtWidgets.QLabel("총 판매가액: ¥0")
+        self.lbl_total_sales.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.lbl_total_sales.setStyleSheet("font-size: 14px; font-weight: bold; color: #007bff; margin-right: 10px;")
+        
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.accept_dialog)
         button_box.rejected.connect(self.reject)
 
+        # 프라이버시 모드 적용 상태 확인 (설정에서)
+        if self.settings:
+             is_privacy = self.settings.value("view/privacy_mode", False, type=bool)
+             self.set_privacy_mode(is_privacy)
+
         main_layout.addWidget(header_group)
         main_layout.addWidget(item_group, 1)
+        main_layout.addWidget(self.lbl_total_sales) # 버튼 위에 추가
         main_layout.addWidget(button_box)
 
-    def save_column_widths(self):
-        """QTreeWidget의 컬럼 폭을 저장합니다."""
-        if not self.settings: return
-        header = self.item_tree.header()
-        widths = [header.sectionSize(i) for i in range(header.count())]
-        self.settings.setValue("delivery_dialog/tree_column_widths", widths)
+    def set_privacy_mode(self, enabled: bool):
+        self.privacy_mode_enabled = enabled
+        if enabled:
+            self.lbl_total_sales.setText("총 판매가액: ****")
+        else:
+            self.update_all_counts()
 
-    def restore_column_widths(self):
-        """QTreeWidget의 컬럼 폭을 복원합니다."""
-        if not self.settings: return
-        widths = self.settings.value("delivery_dialog/tree_column_widths")
-        if widths:
-            header = self.item_tree.header()
-            for i, width in enumerate(widths):
-                if i < header.count():
-                    header.resizeSection(i, int(width))
 
-    def closeEvent(self, event):
-        """창을 닫을 때 현재 지오메트리(크기 및 위치)를 저장합니다."""
-        if self.settings:
-            self.settings.setValue("delivery_dialog/geometry", self.saveGeometry())
-        super().closeEvent(event)
 
-    def show_tree_context_menu(self, position):
+    def open_pallet_calc_dialog(self):
+        """선택한 항목에 대한 팔레트 계산 및 포장 정보 수정"""
         selected_items = self.item_tree.selectedItems()
         if not selected_items:
+            QMessageBox.information(self, "알림", "팔레트 계산을 수행할 품목을 선택해주세요.")
             return
 
-        menu = QtWidgets.QMenu(self)
-
-        # ✅ [수정] 선택된 아이템이 '주문(order)' 타입인지 확인
-        item = selected_items[0]
-        data = item.data(0, Qt.UserRole)
-
-        item_level = -1
-        if item.parent() is None:
-            item_level = 0
-        elif item.parent().parent() is None:
-            item_level = 1
-        else:
-            item_level = 2
-
-        # ✅ 타입이 'order'인 경우에만 '발주/제품 추가' 메뉴 표시
-        if item_level == 0 and data and data.get('type') == 'order':
-            add_action = menu.addAction("이 주문에 발주/제품 추가...")
-            add_action.triggered.connect(self.add_products_to_selected_order)
-
-        delete_action = menu.addAction("선택 항목 삭제")
-        delete_action.triggered.connect(self.delete_selected_tree_items)
-
-        menu.exec_(self.item_tree.mapToGlobal(position))
-
-    def delete_selected_tree_items(self):
-        selected_items = self.item_tree.selectedItems()
-        if not selected_items: return
-
-        reply = QMessageBox.question(self, "삭제 확인",
-                                     f"{len(selected_items)}개 항목(및 하위 항목)을 삭제하시겠습니까?",
-                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-
-        if reply == QMessageBox.No: return
-
-        root = self.item_tree.invisibleRootItem()
+        # 선택된 항목 중 '제품(Product)' 레벨인 것만 필터링
+        target_items = []
+        target_products_data = []
+        
         for item in selected_items:
-            (item.parent() or root).removeChild(item)
+            data = item.data(0, Qt.UserRole)
+            if data and 'product_name' in data: # 제품 노드
+                target_items.append(item)
+                target_products_data.append(data)
+            elif data and data.get('type') == 'purchase':
+                # 발주 노드 선택 시 하위 모든 제품 포함
+                for i in range(item.childCount()):
+                    child = item.child(i)
+                    c_data = child.data(0, Qt.UserRole)
+                    if c_data: 
+                        target_items.append(child)
+                        target_products_data.append(c_data)
 
-        self.update_all_counts()
+        if not target_items:
+            QMessageBox.information(self, "알림", "선택된 항목에 제품이 없습니다.")
+            return
+
+        # [수정] 혼적 허용: 선택된 모든 제품을 대상으로 함
+        # 기존에는 동일 품목코드만 필터링했으나, 이제 여러 품목을 한 번에 넘김
+        pass
+        
+        dialog = PalletCalculationDialog(self, tree_items=target_items, parent=self)
+        if dialog.exec() == QDialog.Accepted:
+            QMessageBox.information(self, "완료", "포장 정보가 저장되었습니다.")
 
     def open_add_order_dialog(self):
         available_orders = get_available_orders_for_purchase(self.delivery_id if self.is_edit else None)
@@ -1104,32 +1402,95 @@ class DeliveryDialog(QDialog):
     def update_all_counts(self):
         bold_font = QFont();
         bold_font.setBold(True)
+        
+        total_sales_amt = 0
 
         root = self.item_tree.invisibleRootItem()
         for i in range(root.childCount()):
-            order_item = root.child(i)
-            data = order_item.data(0, Qt.UserRole)
+            root_item = root.child(i)
+            data = root_item.data(0, Qt.UserRole)
+            if not data: continue
+            
+            item_type = data.get('type')
 
-            # ✅ [수정] 'order' 타입일 때만 처리 (재고품목은 건너뜀)
-            if not data or data.get('type') != 'order':
-                continue
+            if item_type == 'order':
+                order_total_qty = 0
+                for j in range(root_item.childCount()):
+                    po_item = root_item.child(j)
+                    po_data = po_item.data(0, Qt.UserRole)
+                    
+                    if not po_data or po_data.get('type') != 'purchase':
+                         continue
+                         
+                    po_total_qty = po_item.childCount()
+                    po_item.setText(0, f"  └ {po_data['purchase_text']} ({po_total_qty}개)")
+                    order_total_qty += po_total_qty
+                    
+                    # 제품 단가 합산
+                    for k in range(po_item.childCount()):
+                        prod_item = po_item.child(k)
+                        prod_data = prod_item.data(0, Qt.UserRole)
+                        if prod_data:
+                            total_sales_amt += (prod_data.get('unit_price') or 0)
+                            
+                root_item.setText(0, f"{data['order_text']} (총 {order_total_qty}개)")
+                root_item.setFont(0, bold_font)
+            
+            elif item_type == 'stock_item':
+                # 재고 품목 (개별)
+                total_sales_amt += (data.get('unit_price') or 0)
+                
+        # 라벨 업데이트
+        if getattr(self, 'privacy_mode_enabled', False):
+            self.lbl_total_sales.setText("총 판매가액: ****")
+        else:
+            self.lbl_total_sales.setText(f"총 판매가액: ¥{int(total_sales_amt):,}")
 
-            order_total_qty = 0
+    def show_tree_context_menu(self, position):
+        selected_items = self.item_tree.selectedItems()
+        if not selected_items:
+            return
 
-            for j in range(order_item.childCount()):
-                po_item = order_item.child(j)
-                po_data = po_item.data(0, Qt.UserRole)
+        menu = QtWidgets.QMenu(self)
 
-                # 발주 항목인지 확인 (혹시 모를 방어코드)
-                if not po_data or po_data.get('type') != 'purchase':
-                    continue
+        # ✅ [수정] 선택된 아이템이 '주문(order)' 타입인지 확인
+        item = selected_items[0]
 
-                po_total_qty = po_item.childCount()
-                po_item.setText(0, f"  └ {po_data['purchase_text']} ({po_total_qty}개)")
-                order_total_qty += po_total_qty
+        data = item.data(0, Qt.UserRole)
 
-            order_item.setText(0, f"{data['order_text']} (총 {order_total_qty}개)")
-            order_item.setFont(0, bold_font)
+        item_level = -1
+        if item.parent() is None:
+            item_level = 0
+        elif item.parent().parent() is None:
+            item_level = 1
+        else:
+            item_level = 2
+
+        # ✅ 타입이 'order'인 경우에만 '발주/제품 추가' 메뉴 표시
+        if item_level == 0 and data and data.get('type') == 'order':
+            add_action = menu.addAction("이 주문에 발주/제품 추가...")
+            add_action.triggered.connect(self.add_products_to_selected_order)
+
+        delete_action = menu.addAction("선택 항목 삭제")
+        delete_action.triggered.connect(self.delete_selected_tree_items)
+
+        menu.exec_(self.item_tree.mapToGlobal(position))
+
+    def delete_selected_tree_items(self):
+        selected_items = self.item_tree.selectedItems()
+        if not selected_items: return
+
+        reply = QMessageBox.question(self, "삭제 확인",
+                                     f"{len(selected_items)}개 항목(및 하위 항목)을 삭제하시겠습니까?",
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+
+        if reply == QMessageBox.No: return
+
+        root = self.item_tree.invisibleRootItem()
+        for item in selected_items:
+            (item.parent() or root).removeChild(item)
+
+        self.update_all_counts()
 
     def load_delivery_data(self):
         if not self.delivery_id: return
@@ -1179,7 +1540,17 @@ class DeliveryDialog(QDialog):
                     -- [추가] 수리 상태 조회 (StockItem용)
                     (SELECT r.status FROM product_repairs r 
                      WHERE r.product_id = pr.id 
-                     ORDER BY r.receipt_date DESC, r.id DESC LIMIT 1) as latest_repair_status
+                     ORDER BY r.receipt_date DESC, r.id DESC LIMIT 1) as latest_repair_status,
+
+                    -- ✅ [추가] 단가 조회 (주문 연결 시)
+                    (SELECT oi2.unit_price_cents / 100
+                     FROM order_items oi2 
+                     WHERE oi2.order_id = di.order_id AND oi2.item_code = di.item_code 
+                     LIMIT 1
+                    ) as unit_price,
+                    
+                    di.items_per_box, di.box_l, di.box_w, di.box_h, di.box_weight, di.max_layer,
+                    di.pallet_type, di.loading_pattern, di.boxes_per_pallet
 
                 FROM delivery_items di
                 LEFT JOIN products pr 
@@ -1199,7 +1570,9 @@ class DeliveryDialog(QDialog):
             item_keys = [
                 'serial_no', 'di_mfg_code', 'qty', 'order_id', 'purchase_id',
                 'di_item_code', 'di_product_name', 'pr_item_code', 'pr_product_name', 'pr_mfg_code',
-                'order_display_text', 'purchase_display_text', 'latest_repair_status'
+                'order_display_text', 'purchase_display_text', 'latest_repair_status', 'unit_price',
+                'items_per_box', 'box_l', 'box_w', 'box_h', 'box_weight', 'max_layer',
+                'pallet_type', 'loading_pattern', 'boxes_per_pallet'
             ]
 
             for item_row in items_with_parents:
@@ -1213,6 +1586,15 @@ class DeliveryDialog(QDialog):
                 item_dict['item_code'] = item_dict.get('pr_item_code') or item_dict.get('di_item_code')
                 item_dict['product_name'] = item_dict.get('pr_product_name') or item_dict.get(
                     'di_product_name') or 'N/A'
+
+                # 포장 정보 보정 (NULL -> 0 or 1)
+                item_dict['items_per_box'] = item_dict.get('items_per_box') or 1
+                item_dict['box_l'] = item_dict.get('box_l') or 0
+                item_dict['box_w'] = item_dict.get('box_w') or 0
+                item_dict['box_h'] = item_dict.get('box_h') or 0
+                item_dict['box_weight'] = item_dict.get('box_weight') or 0.0
+                item_dict['max_layer'] = item_dict.get('max_layer') or 0
+                item_dict['boxes_per_pallet'] = item_dict.get('boxes_per_pallet') or 0
 
                 # ✅ [수정] 주문/발주 정보가 없는 경우 (재고 품목)
                 if not order_id or not purchase_id:
@@ -1244,6 +1626,28 @@ class DeliveryDialog(QDialog):
             import traceback;
             traceback.print_exc()
             self.reject()
+
+    def save_column_widths(self):
+        """컬럼 폭 저장"""
+        if not self.settings: return
+        widths = []
+        for i in range(self.item_tree.columnCount()):
+            widths.append(self.item_tree.columnWidth(i))
+        self.settings.setValue("delivery_dialog_tree/column_widths", widths)
+
+    def restore_column_widths(self):
+        """컬럼 폭 복원"""
+        if not self.settings: return
+        widths = self.settings.value("delivery_dialog_tree/column_widths")
+        if widths:
+            header = self.item_tree.header()
+            blocker = QSignalBlocker(header)  # 리사이즈 시그널 차단
+            try:
+                for col, width in enumerate(widths):
+                    if col < self.item_tree.columnCount():
+                        self.item_tree.setColumnWidth(col, int(width))
+            finally:
+                blocker.unblock()
 
     def accept_dialog(self):
         invoice_no = self.edt_invoice_no.text().strip()
@@ -1300,7 +1704,20 @@ class DeliveryDialog(QDialog):
                             'product_name': product_data.get('product_name'),
                             'qty': 1,
                             'order_id': order_id,
-                            'purchase_id': purchase_id
+                            'purchase_id': purchase_id,
+                            
+                            # 포장 정보
+                            'box_l': product_data.get('box_l', 0),
+                            'box_w': product_data.get('box_w', 0),
+                            'box_h': product_data.get('box_h', 0),
+                            'items_per_box': product_data.get('items_per_box', 1),
+                            'max_layer': product_data.get('max_layer', 0),
+                            'box_weight': product_data.get('box_weight', 0.0),
+                            
+                            # 계산 결과
+                            'pallet_type': product_data.get('pallet_type'),
+                            'loading_pattern': product_data.get('loading_pattern'),
+                            'boxes_per_pallet': product_data.get('boxes_per_pallet', 0)
                         })
 
             elif item_type == 'stock_item':
@@ -1319,7 +1736,20 @@ class DeliveryDialog(QDialog):
                     'product_name': product_data.get('product_name'),
                     'qty': 1,
                     'order_id': None,
-                    'purchase_id': None
+                    'purchase_id': None,
+                    
+                    # 포장 정보
+                    'box_l': product_data.get('box_l', 0),
+                    'box_w': product_data.get('box_w', 0),
+                    'box_h': product_data.get('box_h', 0),
+                    'items_per_box': product_data.get('items_per_box', 1),
+                    'max_layer': product_data.get('max_layer', 0),
+                    'box_weight': product_data.get('box_weight', 0.0),
+                    
+                    # 계산 결과
+                    'pallet_type': product_data.get('pallet_type'),
+                    'loading_pattern': product_data.get('loading_pattern'),
+                    'boxes_per_pallet': product_data.get('boxes_per_pallet', 0)
                 })
 
         if not final_items:
@@ -1351,11 +1781,16 @@ class DeliveryDialog(QDialog):
                 cur.execute(
                     """INSERT INTO delivery_items (
                         delivery_id, item_code, serial_no, manufacture_code, product_name, qty,
-                        order_id, purchase_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        order_id, purchase_id,
+                        box_l, box_w, box_h, items_per_box, max_layer, box_weight,
+                        pallet_type, loading_pattern, boxes_per_pallet
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (delivery_id, item['item_code'], item['serial_no'], item['manufacture_code'],
                      item['product_name'],
-                     item['qty'], item['order_id'], item['purchase_id'])
+                     item['qty'], item['order_id'], item['purchase_id'],
+                     item['box_l'], item['box_w'], item['box_h'], 
+                     item['items_per_box'], item['max_layer'], item['box_weight'],
+                     item['pallet_type'], item['loading_pattern'], item['boxes_per_pallet'])
                 )
 
             for order_id in unique_order_ids:
@@ -1563,10 +1998,33 @@ class StockSerialPickerDialog(QDialog):
                 FROM products pr
                 LEFT JOIN purchases p ON pr.purchase_id = p.id
                 WHERE pr.part_no = ?
-                  AND pr.delivery_id IS NULL
                   AND pr.consumed_by_product_id IS NULL
+                  AND (
+                      -- A. 어떤 납품 정보도 없는 순수 재고
+                      pr.delivery_id IS NULL
+                      OR 
+                      -- B. 과거 납품되었으나 그 후에 리콜 접수된 제품 (재고로 간주)
+                      (
+                          EXISTS (
+                              SELECT 1 FROM recall_items ri
+                              JOIN recall_cases rc ON ri.recall_case_id = rc.id
+                              JOIN deliveries d2 ON pr.delivery_id = d2.id
+                              WHERE ri.product_id = pr.id 
+                                AND rc.receipt_date > d2.ship_datetime
+                                AND rc.status != '완료'
+                          )
+                          -- 단, 현재 수정 중인 납품서에 이미 들어있는 경우는 제외 (중복 방지)
+                          AND (pr.delivery_id != ?)
+                      )
+                  )
+                  -- C. 리콜 건 자체가 완료된 경우는 무조건 제외
+                  AND NOT EXISTS (
+                      SELECT 1 FROM recall_items ri2
+                      JOIN recall_cases rc2 ON ri2.recall_case_id = rc2.id
+                      WHERE ri2.product_id = pr.id AND rc2.status = '완료'
+                  )
             """
-            cur.execute(sql_products, (self.item_code,))
+            cur.execute(sql_products, (self.item_code, self.delivery_id or -1))
             products = cur.fetchall()
 
             for (product_id, serial_no, mfg_code, po_no, name) in products:
@@ -1593,17 +2051,31 @@ class StockSerialPickerDialog(QDialog):
                     latest_repair_status = (raw_status or "").strip()
 
                     if latest_repair_status == '자체처리':
-                        continue
-
-                    if latest_repair_status == '수리완료':
+                        # 자체처리된 수리 건이 있어도 리콜 대상일 수 있으므로 continue 하지 않고 상태만 기록
+                        status_text = "재고 (자체처리됨)"
+                    elif latest_repair_status == '수리완료':
                         status_text = "✅ 수리완료 (출하대기)"
                         is_repaired = True
                     elif latest_repair_status == '재출고':
-                        # 재출고된 건이 왜 재고에 있는지? (반품 후 재입고 시나리오 등)
                         status_text = "✅ 재출고됨 (재고)"
                         is_repaired = True
                     elif latest_repair_status in ['접수', '수리중']:
                         status_text = f"⚠️ 수리중 ({latest_repair_status})"
+
+                # --- [추가] 리콜 이력 확인 ---
+                cur.execute("""
+                    SELECT item_status FROM recall_items 
+                    WHERE product_id = ? 
+                    ORDER BY id DESC LIMIT 1
+                """, (product_id,))
+                recall = cur.fetchone()
+                if recall:
+                    recall_status = (recall[0] or "").strip()
+                    if recall_status == '완료':
+                        status_text = "✅ 리콜완료 (출하대기)"
+                        is_repaired = True
+                    elif recall_status in ['대기', '수리중']:
+                        status_text = f"⚠️ 리콜중 ({recall_status})"
 
                 # 3. 맵에 저장
                 all_products_map[product_id] = {
@@ -1619,38 +2091,9 @@ class StockSerialPickerDialog(QDialog):
                     'checked': (serial_no in self.existing_serials)
                 }
 
-            # 4. (수정 모드일 때) 현재 납품에 포함된 제품도 조회하여 추가
-            if self.is_edit and self.delivery_id:
-                sql_existing = """
-                    SELECT 
-                        pr.id, pr.serial_no, pr.manufacture_code, p.purchase_no, pr.product_name
-                    FROM products pr
-                    LEFT JOIN purchases p ON pr.purchase_id = p.id
-                    WHERE pr.part_no = ? AND pr.delivery_id = ?
-                """
-                cur.execute(sql_existing, (self.item_code, self.delivery_id))
-                existing_rows = cur.fetchall()
-
-                for (product_id, serial_no, mfg_code, po_no, name) in existing_rows:
-                    if product_id not in all_products_map:
-                        # 기존 제품에 대해서도 수리 상태 재확인
-                        cur.execute("""
-                            SELECT status FROM product_repairs 
-                            WHERE product_id = ? ORDER BY receipt_date DESC, id DESC LIMIT 1
-                        """, (product_id,))
-                        res = cur.fetchone()
-                        r_stat = (res[0] or "").strip() if res else None
-
-                        is_rep = (r_stat in ['수리완료', '자체처리', '재출고'])
-
-                        all_products_map[product_id] = {
-                            'product_id': product_id, 'serial_no': serial_no, 'manufacture_code': mfg_code,
-                            'purchase_no': po_no, 'product_name': name, 'item_code': self.item_code,
-                            'status_text': f"현재 납품 포함 (S/N: {serial_no})",
-                            'latest_repair_status': r_stat,
-                            'is_repaired': is_rep,
-                            'checked': True
-                        }
+            # 4. (삭제) 이전에 현재 납품에 포함된 제품도 조회하여 추가하던 로직을 제거함
+            # 이 창은 오직 '추가'할 수 있는 새로운 재고들만 보여줘야 함.
+            # 이미 납품 수정 창의 목록에 있는 것은 표시할 필요가 없음.
 
             conn.close()
 
@@ -1699,3 +2142,342 @@ class StockSerialPickerDialog(QDialog):
             if chk_item.checkState() == Qt.Checked:
                 products.append(chk_item.data(Qt.UserRole))
         return products
+
+# -----------------------------------------------------------------------------
+# Pallet Calculation Dialog (다차종 혼적 지원)
+# -----------------------------------------------------------------------------
+class PalletCalculationDialog(QDialog):
+    def __init__(self, delivery_widget, tree_items, parent=None):
+        super().__init__(parent)
+        self.delivery_widget = delivery_widget
+        self.tree_items = tree_items 
+        
+        # 품목별 데이터 정리
+        self.items_data = self._group_items(tree_items)
+
+        self.setWindowTitle("팔레트 계산 (다차종 혼적 지원)")
+        self.resize(1000, 700)
+        
+        self.setup_ui()
+        self.load_initial_data()
+        
+        # [설정 로드] 컬럼 너비 복원
+        self.load_settings()
+        
+    def _group_items(self, tree_items):
+        grouped = {}
+        for item in tree_items:
+            data = item.data(0, Qt.UserRole)
+            code = data.get('item_code') or data.get('part_no')
+            if not code: continue
+            
+            if code not in grouped:
+                # [수정] DB에서 약어 조회 (Rev 무관하게 최신 1건)
+                abbr_name = None
+                conn = get_conn()
+                cur = conn.cursor()
+                try:
+                    # get_product_master_by_code는 Rev 가 일치해야 하므로,
+                    # 여기서는 Rev 무관하게 약어를 가져오기 위해 직접 쿼리
+                    cur.execute("SELECT abbreviation FROM product_master WHERE item_code = ? ORDER BY id DESC LIMIT 1", (code,))
+                    res = cur.fetchone()
+                    if res and res[0]:
+                        abbr_name = res[0]
+                except Exception as e:
+                    print(f"Error fetching abbreviation for {code}: {e}")
+                finally:
+                    conn.close()
+
+                original_name = data.get('product_name') or data.get('item_name') or data.get('description') or code
+                final_name = abbr_name if abbr_name else original_name
+                
+                grouped[code] = {
+                    'item_code': code,
+                    'item_name': final_name,
+                    'qty': 0,
+                    'product_ids': [],
+                    'tree_items': [],
+                    'specs': {} 
+                }
+            grouped[code]['qty'] += 1
+            grouped[code]['product_ids'].append(data.get('id'))
+            grouped[code]['tree_items'].append(item)
+            
+            if not grouped[code]['specs'] and data.get('box_l'):
+                 grouped[code]['specs'] = {
+                     'box_l': data.get('box_l'),
+                     'box_w': data.get('box_w'),
+                     'box_h': data.get('box_h'),
+                     'box_weight': data.get('box_weight'),
+                     'items_per_box': data.get('items_per_box'),
+                     'max_layer': data.get('max_layer')
+                 }
+                 
+        return list(grouped.values())
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # Summary
+        total_qty = sum(item['qty'] for item in self.items_data)
+        info_label = QLabel(f"선택된 품목: {len(self.items_data)}종 (총 {total_qty}개)")
+        info_label.setStyleSheet("font-weight: bold; font-size: 14px; margin-bottom: 10px;")
+        layout.addWidget(info_label)
+        
+        # Input Table
+        self.table = QTableWidget()
+        self.table.setColumnCount(8)
+        self.table.setHorizontalHeaderLabels(["품목코드", "수량", "L (mm)", "W (mm)", "H (mm)", "무게 (kg)", "박스당 제품수량", "최대단수"])
+        
+        header = self.table.horizontalHeader()
+        # 기본적으로 Stretch 사용하되, 특정 컬럼 너비 조정
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        
+        # 기본적으로 모든 컬럼을 Interactive(사용자 조절 가능)로 설정
+        # 초기 폭은 내용을 기준으로 잡거나(ResizeToContents) 고정값 사용 후 Interactive 순서로 적용
+        
+        # 0: Code
+        header.setSectionResizeMode(0, QHeaderView.Interactive) 
+        
+        # 1: Qty
+        header.setSectionResizeMode(1, QHeaderView.Interactive)
+        
+        # 2,3,4: L,W,H
+        header.setSectionResizeMode(2, QHeaderView.Interactive)
+        header.setSectionResizeMode(3, QHeaderView.Interactive)
+        header.setSectionResizeMode(4, QHeaderView.Interactive)
+        
+        # 5: Weight
+        self.table.setColumnWidth(5, 70) 
+        header.setSectionResizeMode(5, QHeaderView.Interactive)
+        
+        # 6: Items Per Box
+        header.setSectionResizeMode(6, QHeaderView.Interactive)
+        
+        # 7: Max Layer
+        self.table.setColumnWidth(7, 70)
+        header.setSectionResizeMode(7, QHeaderView.Interactive)
+
+        layout.addWidget(self.table)
+        
+        # Calc Button
+        self.btn_calc = QtWidgets.QPushButton("계산하기 (혼적 적용)")
+        self.btn_calc.clicked.connect(self.calculate)
+        self.btn_calc.setStyleSheet("font-weight: bold; background-color: #e3f2fd; padding: 10px;")
+        layout.addWidget(self.btn_calc)
+        
+        # Result Group
+        result_group = QtWidgets.QGroupBox("계산 결과")
+        result_layout = QFormLayout(result_group)
+        
+        self.lbl_pallet_type = QLabel("-")
+        
+        # [수정] 상세 리포트 표시를 위한 TextEdit
+        self.txt_pattern = QtWidgets.QTextEdit()
+        self.txt_pattern.setReadOnly(True)
+        self.txt_pattern.setFixedHeight(200) # 높이 확보
+        self.txt_pattern.setStyleSheet("background-color: #f9f9f9; font-family: Consolas, monospace;")
+        
+        self.lbl_total_pallet = QLabel("-")
+        self.lbl_total_boxes = QLabel("-")
+        
+        result_layout.addRow("추천 팔레트:", self.lbl_pallet_type)
+        result_layout.addRow("적재 내용:", self.txt_pattern)
+        result_layout.addRow("총 박스 수:", self.lbl_total_boxes)
+        result_layout.addRow("필요 팔레트:", self.lbl_total_pallet)
+        
+        result_layout.addRow("총 박스 수:", self.lbl_total_boxes)
+        result_layout.addRow("필요 팔레트:", self.lbl_total_pallet)
+        
+        layout.addWidget(result_group)
+
+        # [신규] 마스터 업데이트 옵션
+        self.chk_update_master = QCheckBox("제품 마스터에 박스 정보(무게, 크기 등) 반영")
+        self.chk_update_master.setChecked(True) # 기본값 체크
+        layout.addWidget(self.chk_update_master)
+        
+        # Buttons
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.button(QDialogButtonBox.Ok).setText("저장 및 적용")
+        btns.accepted.connect(self.save_data)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+    def load_initial_data(self):
+        self.table.setRowCount(len(self.items_data))
+        conn = get_conn()
+        cur = conn.cursor()
+        
+        for row, item in enumerate(self.items_data):
+            code = item['item_code']
+            qty = item['qty']
+            specs = item['specs']
+            
+            if not specs.get('box_l'):
+                cur.execute("SELECT items_per_box, box_l, box_w, box_h, box_weight, max_layer FROM product_master WHERE item_code = ? ORDER BY id DESC LIMIT 1", (code,))
+                db_row = cur.fetchone()
+                if db_row:
+                    specs = {
+                        'items_per_box': db_row[0] or 1,
+                        'box_l': db_row[1] or 0,
+                        'box_w': db_row[2] or 0,
+                        'box_h': db_row[3] or 0,
+                        'box_weight': db_row[4] or 0.0,
+                        'max_layer': db_row[5] or 1
+                    }
+                else:
+                    specs = {'items_per_box': 1, 'box_l': 0, 'box_w': 0, 'box_h': 0, 'box_weight': 0.0, 'max_layer': 1}
+            
+            item_code_item = QTableWidgetItem(code)
+            item_code_item.setFlags(item_code_item.flags() ^ Qt.ItemIsEditable) 
+            self.table.setItem(row, 0, item_code_item)
+            
+            qty_item = QTableWidgetItem(str(qty))
+            qty_item.setFlags(qty_item.flags() ^ Qt.ItemIsEditable)
+            self.table.setItem(row, 1, qty_item)
+            
+            self.table.setItem(row, 2, QTableWidgetItem(str(specs.get('box_l', 0))))
+            self.table.setItem(row, 3, QTableWidgetItem(str(specs.get('box_w', 0))))
+            self.table.setItem(row, 4, QTableWidgetItem(str(specs.get('box_h', 0))))
+            self.table.setItem(row, 5, QTableWidgetItem(str(specs.get('box_weight', 0))))
+            self.table.setItem(row, 6, QTableWidgetItem(str(specs.get('items_per_box', 1))))
+            self.table.setItem(row, 7, QTableWidgetItem(str(specs.get('max_layer', 1))))
+            
+        conn.close()
+        QTimer.singleShot(100, self.calculate)
+
+    def calculate(self):
+        try:
+            items_input = []
+            for row in range(self.table.rowCount()):
+                def get_val(col, default=0):
+                    data = self.table.item(row, col)
+                    if not data: return default
+                    txt = data.text()
+                    try: return int(float(txt))
+                    except: return default
+                    
+                code = self.table.item(row, 0).text()
+                qty = int(self.table.item(row, 1).text())
+                
+                # Retrieve Name from self.items_data (assuming stable order)
+                original = self.items_data[row]
+                name = original.get('item_name', code)
+                
+                box_l = get_val(2)
+                box_w = get_val(3)
+                box_h = get_val(4)
+                weight = float(self.table.item(row, 5).text() or 0)
+                per_box = get_val(6, 1)
+                max_layer = get_val(7, 1)
+                
+                items_input.append({
+                    'item_code': code,
+                    'item_name': name,
+                    'qty': qty,
+                    'box_l': box_l,
+                    'box_w': box_w,
+                    'box_h': box_h,
+                    'box_weight': weight,
+                    'items_per_box': per_box,
+                    'max_layer': max_layer
+                })
+
+            result = PalletCalculator.calculate_mixed(items_input)
+            self.last_calc_result = result
+            
+            self.lbl_pallet_type.setText(result.get('pallet_type', '-'))
+            
+            # [수정] 상세 리포트 텍스트 사용
+            detail_report = result.get('detailed_pattern_text') or result.get('pattern_str', '-')
+            self.txt_pattern.setText(detail_report)
+            
+            self.lbl_total_boxes.setText(f"{result.get('total_boxes', 0)} 박스")
+            self.lbl_total_pallet.setText(f"{result.get('total_pallets', 0)} PLT")
+            self.lbl_total_pallet.setStyleSheet("color: blue; font-weight: bold; font-size: 16px;")
+
+        except Exception as e:
+            self.txt_pattern.setText(f"오류: {e}")
+            import traceback
+            traceback.print_exc()
+            
+    def save_data(self):
+        if hasattr(self, 'last_calc_result') and self.last_calc_result:
+            res = self.last_calc_result
+            
+            # 요약 저장용 텍스트 (DB용)
+            summary_text = res.get('summary_text') or res.get('pattern_str', '')
+            summary = summary_text
+            
+            current_text = self.delivery_widget.edt_secondary_packaging.text().strip()
+            if summary not in current_text:
+                if current_text:
+                    new_text = f"{current_text} / {summary}"
+                else:
+                    new_text = summary
+                self.delivery_widget.edt_secondary_packaging.setText(new_text)
+            
+            # [신규] 제품 마스터 업데이트 로직
+            if self.chk_update_master.isChecked():
+                self.update_product_master_specs()
+
+        self.accept()
+
+    def update_product_master_specs(self):
+        """테이블에 입력된 값으로 product_master 테이블 업데이트"""
+        from ..db import get_conn
+        conn = get_conn()
+        try:
+            cur = conn.cursor()
+            updated_count = 0
+            
+            for row in range(self.table.rowCount()):
+                item_code = self.table.item(row, 0).text()
+                
+                # 입력값 가져오기 (calculate 함수와 동일한 로직)
+                try:
+                    box_l = int(float(self.table.item(row, 2).text() or 0))
+                    box_w = int(float(self.table.item(row, 3).text() or 0))
+                    box_h = int(float(self.table.item(row, 4).text() or 0))
+                    box_weight = float(self.table.item(row, 5).text() or 0)
+                    items_per_box = int(float(self.table.item(row, 6).text() or 1)) # 입수
+                    max_layer = int(float(self.table.item(row, 7).text() or 1))
+                except ValueError:
+                    continue # 숫자가 아니면 스킵
+
+                # 업데이트 쿼리 실행
+                # box_l, box_w, box_h, box_weight, items_per_box, max_layer
+                cur.execute("""
+                    UPDATE product_master 
+                    SET box_l=?, box_w=?, box_h=?, box_weight=?, items_per_box=?, max_layer=?, updated_at=datetime('now','localtime')
+                    WHERE item_code=?
+                """, (box_l, box_w, box_h, box_weight, items_per_box, max_layer, item_code))
+                
+                if cur.rowcount > 0:
+                    updated_count += 1
+            
+            conn.commit()
+            if updated_count > 0:
+                print(f"[PalletCalc] {updated_count}개 품목의 마스터 정보가 업데이트되었습니다.")
+
+        except Exception as e:
+            conn.rollback()
+            print(f"제품 마스터 업데이트 실패: {e}")
+
+    def save_settings(self):
+        settings = QSettings("Koba", "PalletCalc")
+        # 컬럼 너비 저장
+        for i in range(self.table.columnCount()):
+            settings.setValue(f"col_width_{i}", self.table.columnWidth(i))
+            
+    def load_settings(self):
+        settings = QSettings("Koba", "PalletCalc")
+        for i in range(self.table.columnCount()):
+            val = settings.value(f"col_width_{i}")
+            if val:
+                self.table.setColumnWidth(i, int(val))
+                
+    def done(self, r):
+        # 다이얼로그 닫힐 때 설정 저장 (OK/Cancel 무관)
+        self.save_settings()
+        super().done(r)

@@ -45,23 +45,99 @@ def get_icon_path():
     return None
 
 
-def apply_table_resize_policy(table: QtWidgets.QTableWidget):
+class AdjacentColumnResizer(QtCore.QObject):
     """
-    테이블의 모든 컬럼을 사용자가 크기 조절 가능한 'Interactive' 모드로 설정하고,
+    컬럼 크기 조절 시 인접한 다음 컬럼의 크기를 반대로 조절하여
+    전체 테이블 너비나 다른 컬럼에 영향을 주지 않도록 하는 리사이저.
+    """
+    def __init__(self, header: QtWidgets.QHeaderView):
+        super().__init__(header)
+        self.header = header
+        self.header.sectionResized.connect(self.on_section_resized)
+        self.resizing = False
+
+    def on_section_resized(self, logical_index, old_size, new_size):
+        if self.resizing:
+            return
+
+        # 1. 마지막 섹션인지 확인 (마지막 섹션은 Stretch이므로 패스)
+        # 현재 보이는 순서(visual index) 기준 다음 컬럼 찾기
+        visual_index = self.header.visualIndex(logical_index)
+        if visual_index >= self.header.count() - 1:
+            return
+
+        # 다음 시각적 컬럼의 logical index 찾기 (숨겨진 컬럼 건너뛰기)
+        next_logical_index = -1
+        for v_idx in range(visual_index + 1, self.header.count()):
+            l_idx = self.header.logicalIndex(v_idx)
+            if not self.header.isSectionHidden(l_idx):
+                next_logical_index = l_idx
+                break
+        
+        if next_logical_index == -1:
+            return # 뒤에 더 이상 보이는 컬럼이 없음
+
+        # 2. 크기 변화량 계산
+        delta = new_size - old_size
+        
+        # 3. 제약 조건 확인 및 적용
+        current_next_size = self.header.sectionSize(next_logical_index)
+        min_width = self.header.minimumSectionSize()
+        
+        # 다음 컬럼이 줄어들 수 있는 최대 양
+        available_shrink = current_next_size - min_width
+        
+        corrected_delta = delta
+        
+        # 늘리는 경우 (delta > 0): 다음 컬럼이 그만큼 줄어들어야 함
+        if delta > 0:
+            if delta > available_shrink:
+                corrected_delta = available_shrink
+                
+        # 줄이는 경우 (delta < 0): 다음 컬럼이 그만큼 늘어나야 함 (제약 없음)
+        # 단, 현재 컬럼이 min_width보다 작아지는 것은 QHeaderView가 알아서 막음 (보통)
+        
+        self.resizing = True
+        
+        # 만약 delta가 제한되어야 한다면, 현재 컬럼 크기도 강제로 되돌림
+        if corrected_delta != delta:
+            self.header.resizeSection(logical_index, old_size + corrected_delta)
+            
+        # 다음 컬럼 리사이즈 (corrected_delta 만큼 반대로)
+        new_next_size = current_next_size - corrected_delta
+        self.header.resizeSection(next_logical_index, new_next_size)
+        
+        self.resizing = False
+
+
+def apply_table_resize_policy(widget: QtWidgets.QTableWidget | QtWidgets.QTreeWidget):
+    """
+    테이블/트리의 모든 컬럼을 사용자가 크기 조절 가능한 'Interactive' 모드로 설정하고,
     마지막 섹션(컬럼)이 남은 공간을 모두 차지하도록 하여 가로 스크롤바가 생기지 않게 합니다.
-    이 방식은 restore_column_widths()로 복원된 컬럼 폭을 존중합니다.
+    또한, 인접 컬럼 리사이징(Splitter 효과) 로직을 적용합니다.
     """
-    header = table.horizontalHeader()
+    if isinstance(widget, QtWidgets.QTreeWidget):
+        header = widget.header()
+    else:
+        header = widget.horizontalHeader()
 
     # 1. 모든 컬럼을 사용자가 직접 크기를 조절할 수 있는 모드로 변경
-    for c in range(table.columnCount()):
+    for c in range(header.count()):
         header.setSectionResizeMode(c, QtWidgets.QHeaderView.Interactive)
 
-    # 2. 마지막 컬럼이 남은 공간을 모두 채우도록 설정 (가장 중요!)
+    # 2. 마지막 컬럼이 남은 공간을 모두 채우도록 설정
     header.setStretchLastSection(True)
 
     # 3. 가로 스크롤바 비활성화
-    table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    
+    # ✅ [추가] 세로 스크롤바 상시 표시 (스크롤바 유무에 따른 너비 흔들림 방지)
+    # 내용이 적을 때는 비활성화(회색)되고, 많아지면 활성화됩니다.
+    widget.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+    
+    # 4. 인접 컬럼 리사이저 부착 (GC 방지 위해 widget 속성으로 저장)
+    resizer = AdjacentColumnResizer(header)
+    widget._column_resizer = resizer
 
 
 def parse_due_text(text: str) -> str | None:

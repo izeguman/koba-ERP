@@ -1,0 +1,92 @@
+2026-01-29 21:23:14,904 [INFO] === Application Started (Retention: 30 days) ===
+2026-01-29 21:23:14,963 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\run.py", line 105, in <module>
+    main()
+    ~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\run.py", line 81, in main
+    from app.ui.main_window import MainWindow
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\main_window.py", line 11, in <module>
+    from ..db import (get_conn, get_due_change_history, add_due_change_record, update_order_final_due_date,
+                      add_or_update_product_master, search_product_master, is_purchase_completed,
+                      query_all)
+SyntaxError: source code string cannot contain null bytes
+
+2026-01-29 21:23:28,081 [INFO] === Application Started (Retention: 30 days) ===
+2026-01-29 21:23:28,097 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\run.py", line 105, in <module>
+    main()
+    ~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\run.py", line 81, in main
+    from app.ui.main_window import MainWindow
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\main_window.py", line 11, in <module>
+    from ..db import (get_conn, get_due_change_history, add_due_change_record, update_order_final_due_date,
+                      add_or_update_product_master, search_product_master, is_purchase_completed,
+                      query_all)
+SyntaxError: source code string cannot contain null bytes
+
+2026-01-29 21:34:23,020 [INFO] === Application Started (Retention: 30 days) ===
+2026-01-29 21:34:34,180 [INFO] Main Window icon explicitly set from resource.
+2026-01-29 21:44:35,644 [INFO] === Application Started (Retention: 30 days) ===
+2026-01-29 21:44:38,312 [INFO] Main Window icon explicitly set from resource.
+2026-01-29 21:54:07,847 [INFO] === Application Started (Retention: 30 days) ===
+2026-01-29 21:54:10,845 [INFO] Main Window icon explicitly set from resource.
+2026-01-29 21:54:16,481 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\purchase_widget.py", line 590, in show_purchase_report
+    dialog = PurchaseReportDialog(purchase_id, self)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\report_dialogs.py", line 39, in __init__
+    self.load_data()
+    ~~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\report_dialogs.py", line 47, in load_data
+    html = self.generate_html(data)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\report_dialogs.py", line 104, in generate_html
+    <th>발주번호</th><td>{p_info['purchase_no']}</td>
+                          ~~~~~~^^^^^^^^^^^^^^^
+KeyError: 'purchase_no'
+
+2026-01-29 21:54:20,666 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\purchase_widget.py", line 590, in show_purchase_report
+    dialog = PurchaseReportDialog(purchase_id, self)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\report_dialogs.py", line 39, in __init__
+    self.load_data()
+    ~~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\report_dialogs.py", line 47, in load_data
+    html = self.generate_html(data)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\report_dialogs.py", line 104, in generate_html
+    <th>발주번호</th><td>{p_info['purchase_no']}</td>
+                          ~~~~~~^^^^^^^^^^^^^^^
+KeyError: 'purchase_no'
+
+2026-01-29 21:56:11,537 [INFO] === Application Started (Retention: 30 days) ===
+2026-01-29 21:56:14,860 [INFO] Main Window icon explicitly set from resource.
+2026-01-29 21:58:24,942 [INFO] === Application Started (Retention: 30 days) ===
+2026-01-29 21:58:28,123 [INFO] Main Window icon explicitly set from resource.
+2026-01-29 21:58:43,390 [INFO] === Application Started (Retention: 30 days) ===
+2026-01-29 21:58:46,129 [INFO] Main Window icon explicitly set from resource.
+2026-01-29 22:02:39,925 [INFO] === Application Started (Retention: 30 days) ===
+2026-01-29 22:02:42,698 [INFO] Main Window icon explicitly set from resource.
+2026-01-29 22:12:37,001 [INFO] === Application Started (Retention: 30 days) ===
+2026-01-29 22:12:39,821 [INFO] Main Window icon explicitly set from resource.
+2026-01-29 22:17:29,155 [INFO] === Application Started (Retention: 30 days) ===
+2026-01-29 22:17:32,128 [INFO] Main Window icon explicitly set from resource.
+2026-01-29 22:22:57,860 [INFO] === Application Started (Retention: 30 days) ===
+2026-01-29 22:23:00,938 [INFO] Main Window icon explicitly set from resource.
+2026-01-29 22:27:21,640 [INFO] === Application Started (Retention: 30 days) ===
+2026-01-29 22:27:24,875 [INFO] Main Window icon explicitly set from resource.
+2026-01-29 22:38:23,562 [INFO] === Application Started (Retention: 30 days) ===
+2026-01-29 22:38:26,589 [INFO] Main Window icon explicitly set from resource.
+2026-01-29 22:56:03,925 [INFO] === Application Started (Retention: 30 days) ===
+2026-01-29 22:56:06,777 [INFO] Main Window icon explicitly set from resource.
+2026-01-29 23:00:39,624 [INFO] === Application Started (Retention: 30 days) ===
+2026-01-29 23:00:42,660 [INFO] Main Window icon explicitly set from resource.
+2026-01-29 23:33:34,983 [INFO] === Application Started (Retention: 30 days) ===
+2026-01-29 23:33:37,741 [INFO] Main Window icon explicitly set from resource.
+2026-01-29 23:45:58,301 [INFO] === Application Started (Retention: 30 days) ===
+2026-01-29 23:46:01,137 [INFO] Main Window icon explicitly set from resource.
+2026-01-29 23:51:45,953 [INFO] === Application Started (Retention: 30 days) ===
+2026-01-29 23:51:54,822 [INFO] Main Window icon explicitly set from resource.
+2026-01-29 23:56:17,383 [INFO] === Application Started (Retention: 30 days) ===
+2026-01-29 23:56:20,091 [INFO] Main Window icon explicitly set from resource.

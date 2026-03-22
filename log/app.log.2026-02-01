@@ -1,0 +1,199 @@
+2026-02-01 12:16:05,640 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 12:16:12,083 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 12:17:20,648 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 12:17:23,317 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 12:18:06,451 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 12:18:08,908 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 12:34:09,209 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 12:34:11,939 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 12:36:44,640 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 12:36:47,251 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 12:42:01,988 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 12:42:04,502 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 13:29:09,317 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 13:29:11,955 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 13:30:33,821 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 13:30:36,463 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 13:33:28,124 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 13:33:30,787 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 13:34:43,919 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 13:34:46,499 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 13:39:59,884 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 13:40:02,511 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 13:40:22,701 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 13:40:25,261 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 13:44:22,235 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 13:44:24,916 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 13:48:40,711 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 13:48:43,247 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 14:14:50,747 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 14:14:53,419 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 14:21:25,348 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 14:21:27,960 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 14:28:36,985 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 14:28:39,635 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 14:38:06,462 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 14:38:06,516 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\run.py", line 105, in <module>
+    main()
+    ~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\run.py", line 81, in main
+    from app.ui.main_window import MainWindow
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\main_window.py", line 11, in <module>
+    from ..db import (get_conn, get_due_change_history, add_due_change_record, update_order_final_due_date,
+                      add_or_update_product_master, search_product_master, is_purchase_completed,
+                      query_all, init_db)
+ImportError: cannot import name 'init_db' from 'app.db' (c:\Users\kobat\OneDrive\Product_Management_System\app\db.py)
+
+2026-02-01 14:53:14,585 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 14:53:17,554 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 14:58:35,312 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 14:58:38,132 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 15:00:14,152 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 15:00:16,768 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 15:58:02,603 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 15:58:06,362 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 16:17:28,900 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 16:17:31,736 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 16:21:28,473 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 16:21:32,105 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 16:24:48,303 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 16:24:51,386 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 16:27:36,145 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 16:27:39,109 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 16:31:05,858 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 16:31:08,941 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 16:33:47,983 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 16:33:50,601 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 17:01:12,185 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 17:01:22,658 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 17:01:30,064 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\delivery_widget.py", line 536, in show_context_menu
+    delete_action.triggered.connect(self.delete_selected_items) # Changed from delete_delivery
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'DeliveryWidget' object has no attribute 'delete_selected_items'
+
+2026-02-01 17:01:31,463 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\delivery_widget.py", line 536, in show_context_menu
+    delete_action.triggered.connect(self.delete_selected_items) # Changed from delete_delivery
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'DeliveryWidget' object has no attribute 'delete_selected_items'
+
+2026-02-01 17:01:31,981 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\delivery_widget.py", line 536, in show_context_menu
+    delete_action.triggered.connect(self.delete_selected_items) # Changed from delete_delivery
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'DeliveryWidget' object has no attribute 'delete_selected_items'
+
+2026-02-01 17:01:37,531 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\delivery_widget.py", line 536, in show_context_menu
+    delete_action.triggered.connect(self.delete_selected_items) # Changed from delete_delivery
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'DeliveryWidget' object has no attribute 'delete_selected_items'
+
+2026-02-01 17:01:38,289 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\delivery_widget.py", line 536, in show_context_menu
+    delete_action.triggered.connect(self.delete_selected_items) # Changed from delete_delivery
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'DeliveryWidget' object has no attribute 'delete_selected_items'
+
+2026-02-01 17:01:38,536 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\delivery_widget.py", line 536, in show_context_menu
+    delete_action.triggered.connect(self.delete_selected_items) # Changed from delete_delivery
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'DeliveryWidget' object has no attribute 'delete_selected_items'
+
+2026-02-01 17:01:38,775 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\delivery_widget.py", line 536, in show_context_menu
+    delete_action.triggered.connect(self.delete_selected_items) # Changed from delete_delivery
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'DeliveryWidget' object has no attribute 'delete_selected_items'
+
+2026-02-01 17:01:39,023 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\delivery_widget.py", line 536, in show_context_menu
+    delete_action.triggered.connect(self.delete_selected_items) # Changed from delete_delivery
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'DeliveryWidget' object has no attribute 'delete_selected_items'
+
+2026-02-01 17:01:39,241 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\delivery_widget.py", line 536, in show_context_menu
+    delete_action.triggered.connect(self.delete_selected_items) # Changed from delete_delivery
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'DeliveryWidget' object has no attribute 'delete_selected_items'
+
+2026-02-01 17:01:43,178 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\delivery_widget.py", line 536, in show_context_menu
+    delete_action.triggered.connect(self.delete_selected_items) # Changed from delete_delivery
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'DeliveryWidget' object has no attribute 'delete_selected_items'
+
+2026-02-01 17:01:43,794 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\delivery_widget.py", line 536, in show_context_menu
+    delete_action.triggered.connect(self.delete_selected_items) # Changed from delete_delivery
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'DeliveryWidget' object has no attribute 'delete_selected_items'
+
+2026-02-01 17:02:31,445 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 17:02:34,814 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 17:05:27,234 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 17:05:30,228 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 17:06:54,278 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 17:06:56,857 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 17:08:42,751 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 17:08:45,613 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 17:10:53,088 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 17:10:55,982 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 17:11:49,695 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 17:11:52,239 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 17:13:42,214 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 17:13:44,735 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 17:15:19,603 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 17:15:22,255 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 17:16:04,916 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 17:16:07,479 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 17:17:20,636 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 17:17:23,631 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 17:18:09,669 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 17:18:12,303 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 17:19:15,340 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 17:19:17,849 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 17:33:48,485 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 17:33:51,428 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 17:37:40,618 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 17:37:43,878 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 17:40:07,019 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 17:40:09,639 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 17:43:34,929 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 17:43:37,634 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 17:46:24,743 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 17:46:27,572 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 17:50:35,526 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 17:50:38,285 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 17:56:09,220 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 17:56:11,974 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 18:01:14,475 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 18:01:17,255 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 18:04:18,186 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 18:04:20,954 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 18:06:00,707 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 18:06:03,502 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 18:23:53,885 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 18:23:58,675 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 18:26:34,505 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 18:26:37,444 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 19:15:26,133 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 19:15:30,988 [INFO] Main Window icon explicitly set from resource.
+2026-02-01 19:21:54,202 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-01 19:21:56,767 [INFO] Main Window icon explicitly set from resource.

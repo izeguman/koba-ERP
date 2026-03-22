@@ -83,18 +83,28 @@ class MoneyLineEdit(QtWidgets.QLineEdit):
             self.blockSignals(False)
 
     def get_value(self):
-        """쉼표 제거한 정수값 반환"""
+        """쉼표 제거한 정수값(원) 반환"""
         text = self.text().replace(',', '')
         try:
             return int(text)
         except ValueError:
             return 0
 
+    def get_value_cents(self):
+        """센트 단위 정수값 반환 (원 * 100)"""
+        return self.get_value() * 100
+
     def set_value(self, value):
-        """값 설정"""
+        """값(원) 설정"""
         if value is None:
             value = 0
         self.setText(str(value))
+
+    def set_value_from_cents(self, value_cents):
+        """센트 단위 정수값으로부터 원 단위 설정 (센트 / 100)"""
+        if value_cents is None:
+            value_cents = 0
+        self.set_value(int(value_cents / 100))
 
     def keyPressEvent(self, event):
         """키 입력 처리"""

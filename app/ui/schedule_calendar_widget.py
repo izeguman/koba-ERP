@@ -7,6 +7,7 @@ from PySide6.QtCore import Qt, QDate, Signal, QSignalBlocker
 from PySide6.QtGui import QPainter, QBrush, QColor
 
 from ..db import get_schedule_for_month, get_schedule_details_for_date, query_all, query_one
+from .utils import apply_table_resize_policy
 from datetime import datetime
 
 
@@ -55,6 +56,12 @@ class MonthlyCalendarWidget(QWidget):
         self.calendar.currentPageChanged.connect(self.calendar.load_month_data)
         self.calendar.selectionChanged.connect(self.load_schedule_details)
 
+        self.privacy_mode = False
+
+    def set_privacy_mode(self, enabled: bool):
+        self.privacy_mode = enabled
+        self.load_schedule_details()
+
     def load_schedule_details(self):
         """달력에서 선택된 날짜의 상세 일정을 리스트에 로드"""
         self.details_list.clear()
@@ -72,10 +79,14 @@ class MonthlyCalendarWidget(QWidget):
             order_no, product_name, ship_qty, amount_jpy, order_id, item_code = row
 
             text = f"[{order_no}] {product_name}\n"
-            text += f"    수량: {ship_qty}개 (예상 금액: {format_money(amount_jpy)})"
+            if self.privacy_mode:
+                text += f"    수량: {ship_qty}개"
+            else:
+                text += f"    수량: {ship_qty}개 (예상 금액: {format_money(amount_jpy)})"
 
             item = QListWidgetItem(text)
             self.details_list.addItem(item)
+
 
 
 class CustomCalendarWidget(QCalendarWidget):
@@ -205,18 +216,52 @@ class TimelineWidget(QWidget):
         layout.insertLayout(0, control_layout)
 
         # 3. 헤더 설정 (이전과 동일)
-        header = self.tree.header()
-        header.setSectionResizeMode(0, QHeaderView.Interactive)
-        header.setSectionResizeMode(1, QHeaderView.Interactive)
-        header.setSectionResizeMode(2, QHeaderView.Interactive)
-        header.setSectionResizeMode(3, QHeaderView.Interactive)
-        header.setSectionResizeMode(4, QHeaderView.Interactive)
+        # header = self.tree.header()
+        # header.setSectionResizeMode(0, QHeaderView.Interactive)
+        # header.setSectionResizeMode(1, QHeaderView.Interactive)
+        # header.setSectionResizeMode(2, QHeaderView.Interactive)
+        # header.setSectionResizeMode(3, QHeaderView.Interactive)
+        # header.setSectionResizeMode(4, QHeaderView.Interactive)
         # header.setSectionResizeMode(2, QHeaderView.Stretch)
         self.tree.setAlternatingRowColors(True)
 
+        apply_table_resize_policy(self.tree)
+        
+        # ✅ [수정] 가로 스크롤바 활성화 (utils 정책 오버라이드)
+        self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.tree.header().setStretchLastSection(False)
+
         # 4. 컬럼 폭 저장/복원 (이전과 동일)
+        header = self.tree.header()
         header.sectionResized.connect(self.save_column_widths)
         self.restore_column_widths()
+
+    def set_privacy_mode(self, enabled: bool):
+        self.privacy_mode = enabled
+        # 컬럼 숨김/보임 (예상 금액: 4번)
+        if hasattr(self, 'tree'):
+            if enabled:
+                # 숨기기 전 저장
+                if not self.tree.isColumnHidden(4):
+                    self._timeline_temp_widths = [self.tree.columnWidth(col) for col in range(self.tree.columnCount())]
+                self.tree.setColumnHidden(4, True)
+            else:
+                self.tree.setColumnHidden(4, False)
+                # 복원
+                if hasattr(self, '_timeline_temp_widths') and self._timeline_temp_widths:
+                    # 복원 시에는 시그널 차단 (apply_column_widths 재사용 불가하므로 직접 구현)
+                    header = self.tree.header()
+                    blocker = QSignalBlocker(header)
+                    try:
+                        for col, width in enumerate(self._timeline_temp_widths):
+                            if col < self.tree.columnCount():
+                                if col == 4 and width < 50: width = 100
+                                header.resizeSection(col, width)
+                    finally:
+                        blocker.unblock()
+
+        # 데이터 다시 로드 (상단 합계 텍스트 갱신 위해)
+        self.load_data(mode='auto') # 기본적으로 auto로 리로드
 
     def load_data(self, mode='auto'):  # ✅ [수정] 'mode' 인자 추가
         """
@@ -227,6 +272,10 @@ class TimelineWidget(QWidget):
         - 현재 월 하이라이트, 월별 총 매출/원가 계산
         """
         self.tree.clear()
+
+        # 프라이버시 모드 확인 (속성이 없으면 False로 초기화)
+        if not hasattr(self, 'privacy_mode'):
+            self.privacy_mode = False
 
         try:
             from dateutil.relativedelta import relativedelta
@@ -331,8 +380,11 @@ class TimelineWidget(QWidget):
                 if month_str != last_month:
                     if current_month_group:
                         old_text = current_month_group.text(0)
-                        current_month_group.setText(0,
-                                                    f"{old_text}  |  총매출: {month_total_amount:,.0f} 엔  |  총원가: {month_total_cost:,.0f} 원")
+                        if self.privacy_mode:
+                            current_month_group.setText(0, f"{old_text}")
+                        else:
+                            current_month_group.setText(0,
+                                                        f"{old_text}  |  총매출: {month_total_amount:,.0f} 엔  |  총원가: {month_total_cost:,.0f} 원")
 
                     month_total_amount = 0;
                     month_total_cost = 0
@@ -371,7 +423,10 @@ class TimelineWidget(QWidget):
             # 8. 마지막 월 총액 업데이트 (이전과 동일)
             if current_month_group:
                 old_text = current_month_group.text(0)
-                current_month_group.setText(0,
+                if self.privacy_mode:
+                     current_month_group.setText(0, f"{old_text}")
+                else:
+                    current_month_group.setText(0,
                                             f"{old_text}  |  총매출: {month_total_amount:,.0f} 엔  |  총원가: {month_total_cost:,.0f} 원")
 
         except ImportError:
@@ -383,6 +438,7 @@ class TimelineWidget(QWidget):
             traceback.print_exc()
 
     def apply_column_widths(self, widths: list):
+
         """(새 함수) 외부에서 전달받은 컬럼 폭을 트리에 적용"""
         header = self.tree.header()
         # [핵심] 시그널을 차단하여, 이 함수가 save_column_widths를 다시 호출하지 않도록 함
@@ -509,5 +565,18 @@ class ScheduleCalendarWidget(QWidget):
         """'목록형 일정' 탭이 변경될 때 해당 탭의 데이터를 새로고침"""
         current_widget = self.timeline_tabs.widget(index)
 
-        if isinstance(current_widget, TimelineWidget):
-            current_widget.load_data(mode='auto')
+    def set_privacy_mode(self, enabled: bool):
+        """재무 정보 숨기기 설정"""
+        # 1. 왼쪽 패널 (MonthlyCalendarWidget) - 상세 리스트 갱신 필요
+        #    (달력 자체엔 금액이 없으나, 하단 리스트엔 금액이 있음)
+        if hasattr(self, 'month_view'):
+             # 강제 리로드하여 format_money 등에서 숨김 처리?
+             # 하지만 format_money는 전역 함수이므로, 여기서 제어하기 어려움.
+             # 대신 month_view 내부에 플래그를 심거나, load_schedule_details를 수정해야 함.
+             self.month_view.set_privacy_mode(enabled)
+
+        # 2. 오른쪽 패널 (TimelineWidget들)
+        #    예상 금액(엔): 4번 컬럼, 총매출/총원가 숨김
+        if hasattr(self, 'timeline_3m'): self.timeline_3m.set_privacy_mode(enabled)
+        if hasattr(self, 'timeline_6m'): self.timeline_6m.set_privacy_mode(enabled)
+        if hasattr(self, 'timeline_12m'): self.timeline_12m.set_privacy_mode(enabled)

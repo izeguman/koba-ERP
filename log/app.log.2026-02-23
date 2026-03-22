@@ -1,0 +1,333 @@
+2026-02-23 22:20:56,737 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-23 22:21:08,684 [INFO] Main Window icon explicitly set from resource.
+2026-02-23 22:34:00,587 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-23 22:34:03,280 [INFO] Main Window icon explicitly set from resource.
+2026-02-23 22:41:33,074 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-23 22:41:35,917 [INFO] Main Window icon explicitly set from resource.
+2026-02-23 23:15:02,759 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-23 23:15:04,102 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\run.py", line 105, in <module>
+    main()
+    ~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\run.py", line 81, in main
+    from app.ui.main_window import MainWindow
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\main_window.py", line 22, in <module>
+    from .recall_widget import RecallWidget
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\recall_widget.py", line 21, in <module>
+    from .product_widget import ProductSearchDialog # 제품 검색용 다이얼로그 재사용 고려
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ImportError: cannot import name 'ProductSearchDialog' from 'app.ui.product_widget' (c:\Users\kobat\OneDrive\Product_Management_System\app\ui\product_widget.py)
+
+2026-02-23 23:19:07,413 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-23 23:19:10,655 [INFO] Main Window icon explicitly set from resource.
+2026-02-23 23:19:24,619 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 222, in edit_repair
+    dialog = RepairDialog(self, repair_id=repair_id, product_id=product_id, serial_no=serial_no,
+                          settings=self.settings)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 267, in __init__
+    self.load_repair_data()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 693, in load_repair_data
+    self.add_shipment_row(ship)
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 511, in add_shipment_row
+    mle_ship = create_money_edit(ship_data[6] if ship_data else 0)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 507, in create_money_edit
+    mle.set_value_from_cents(val_cents or 0)
+    ^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'MoneyLineEdit' object has no attribute 'set_value_from_cents'
+
+2026-02-23 23:19:25,912 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 222, in edit_repair
+    dialog = RepairDialog(self, repair_id=repair_id, product_id=product_id, serial_no=serial_no,
+                          settings=self.settings)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 267, in __init__
+    self.load_repair_data()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 693, in load_repair_data
+    self.add_shipment_row(ship)
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 511, in add_shipment_row
+    mle_ship = create_money_edit(ship_data[6] if ship_data else 0)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 507, in create_money_edit
+    mle.set_value_from_cents(val_cents or 0)
+    ^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'MoneyLineEdit' object has no attribute 'set_value_from_cents'
+
+2026-02-23 23:19:26,667 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 222, in edit_repair
+    dialog = RepairDialog(self, repair_id=repair_id, product_id=product_id, serial_no=serial_no,
+                          settings=self.settings)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 267, in __init__
+    self.load_repair_data()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 693, in load_repair_data
+    self.add_shipment_row(ship)
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 511, in add_shipment_row
+    mle_ship = create_money_edit(ship_data[6] if ship_data else 0)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 507, in create_money_edit
+    mle.set_value_from_cents(val_cents or 0)
+    ^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'MoneyLineEdit' object has no attribute 'set_value_from_cents'
+
+2026-02-23 23:19:27,327 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 222, in edit_repair
+    dialog = RepairDialog(self, repair_id=repair_id, product_id=product_id, serial_no=serial_no,
+                          settings=self.settings)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 267, in __init__
+    self.load_repair_data()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 693, in load_repair_data
+    self.add_shipment_row(ship)
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 511, in add_shipment_row
+    mle_ship = create_money_edit(ship_data[6] if ship_data else 0)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 507, in create_money_edit
+    mle.set_value_from_cents(val_cents or 0)
+    ^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'MoneyLineEdit' object has no attribute 'set_value_from_cents'
+
+2026-02-23 23:22:09,717 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\recall_widget.py", line 178, in edit_recall
+    dlg = RecallDialog(self, is_edit=True, case_id=case_id)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\recall_widget.py", line 213, in __init__
+    self.load_case_data()
+    ~~~~~~~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\recall_widget.py", line 383, in load_case_data
+    self.add_product_row(item)
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\recall_widget.py", line 429, in add_product_row
+    p_id = item_data['product_id']
+           ~~~~~~~~~^^^^^^^^^^^^^^
+TypeError: tuple indices must be integers or slices, not str
+
+2026-02-23 23:22:10,632 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\recall_widget.py", line 178, in edit_recall
+    dlg = RecallDialog(self, is_edit=True, case_id=case_id)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\recall_widget.py", line 213, in __init__
+    self.load_case_data()
+    ~~~~~~~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\recall_widget.py", line 383, in load_case_data
+    self.add_product_row(item)
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\recall_widget.py", line 429, in add_product_row
+    p_id = item_data['product_id']
+           ~~~~~~~~~^^^^^^^^^^^^^^
+TypeError: tuple indices must be integers or slices, not str
+
+2026-02-23 23:22:11,002 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\recall_widget.py", line 178, in edit_recall
+    dlg = RecallDialog(self, is_edit=True, case_id=case_id)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\recall_widget.py", line 213, in __init__
+    self.load_case_data()
+    ~~~~~~~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\recall_widget.py", line 383, in load_case_data
+    self.add_product_row(item)
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\recall_widget.py", line 429, in add_product_row
+    p_id = item_data['product_id']
+           ~~~~~~~~~^^^^^^^^^^^^^^
+TypeError: tuple indices must be integers or slices, not str
+
+2026-02-23 23:22:12,507 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\recall_widget.py", line 178, in edit_recall
+    dlg = RecallDialog(self, is_edit=True, case_id=case_id)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\recall_widget.py", line 213, in __init__
+    self.load_case_data()
+    ~~~~~~~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\recall_widget.py", line 383, in load_case_data
+    self.add_product_row(item)
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\recall_widget.py", line 429, in add_product_row
+    p_id = item_data['product_id']
+           ~~~~~~~~~^^^^^^^^^^^^^^
+TypeError: tuple indices must be integers or slices, not str
+
+2026-02-23 23:22:13,587 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\recall_widget.py", line 178, in edit_recall
+    dlg = RecallDialog(self, is_edit=True, case_id=case_id)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\recall_widget.py", line 213, in __init__
+    self.load_case_data()
+    ~~~~~~~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\recall_widget.py", line 383, in load_case_data
+    self.add_product_row(item)
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\recall_widget.py", line 429, in add_product_row
+    p_id = item_data['product_id']
+           ~~~~~~~~~^^^^^^^^^^^^^^
+TypeError: tuple indices must be integers or slices, not str
+
+2026-02-23 23:22:15,604 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\recall_widget.py", line 178, in edit_recall
+    dlg = RecallDialog(self, is_edit=True, case_id=case_id)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\recall_widget.py", line 213, in __init__
+    self.load_case_data()
+    ~~~~~~~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\recall_widget.py", line 383, in load_case_data
+    self.add_product_row(item)
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\recall_widget.py", line 429, in add_product_row
+    p_id = item_data['product_id']
+           ~~~~~~~~~^^^^^^^^^^^^^^
+TypeError: tuple indices must be integers or slices, not str
+
+2026-02-23 23:23:27,200 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-23 23:23:30,376 [INFO] Main Window icon explicitly set from resource.
+2026-02-23 23:30:27,018 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-23 23:30:30,422 [INFO] Main Window icon explicitly set from resource.
+2026-02-23 23:35:49,954 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-23 23:35:52,916 [INFO] Main Window icon explicitly set from resource.
+2026-02-23 23:40:50,928 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-23 23:40:53,872 [INFO] Main Window icon explicitly set from resource.
+2026-02-23 23:43:59,295 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-23 23:44:02,031 [INFO] Main Window icon explicitly set from resource.
+2026-02-23 23:44:25,223 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-23 23:44:27,822 [INFO] Main Window icon explicitly set from resource.
+2026-02-23 23:55:47,098 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-23 23:55:50,375 [INFO] Main Window icon explicitly set from resource.
+2026-02-23 23:55:54,944 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 222, in edit_repair
+    dialog = RepairDialog(self, repair_id=repair_id, product_id=product_id, serial_no=serial_no,
+                          settings=self.settings)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 259, in __init__
+    self.setup_ui()
+    ~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 367, in setup_ui
+    self.restore_column_widths()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 929, in restore_column_widths
+    if col < self.table_shipments.columnCount():
+             ^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'RepairDialog' object has no attribute 'table_shipments'
+
+2026-02-23 23:55:55,894 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 222, in edit_repair
+    dialog = RepairDialog(self, repair_id=repair_id, product_id=product_id, serial_no=serial_no,
+                          settings=self.settings)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 259, in __init__
+    self.setup_ui()
+    ~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 367, in setup_ui
+    self.restore_column_widths()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 929, in restore_column_widths
+    if col < self.table_shipments.columnCount():
+             ^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'RepairDialog' object has no attribute 'table_shipments'
+
+2026-02-23 23:55:56,555 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 222, in edit_repair
+    dialog = RepairDialog(self, repair_id=repair_id, product_id=product_id, serial_no=serial_no,
+                          settings=self.settings)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 259, in __init__
+    self.setup_ui()
+    ~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 367, in setup_ui
+    self.restore_column_widths()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 929, in restore_column_widths
+    if col < self.table_shipments.columnCount():
+             ^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'RepairDialog' object has no attribute 'table_shipments'
+
+2026-02-23 23:55:57,678 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 222, in edit_repair
+    dialog = RepairDialog(self, repair_id=repair_id, product_id=product_id, serial_no=serial_no,
+                          settings=self.settings)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 259, in __init__
+    self.setup_ui()
+    ~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 367, in setup_ui
+    self.restore_column_widths()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 929, in restore_column_widths
+    if col < self.table_shipments.columnCount():
+             ^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'RepairDialog' object has no attribute 'table_shipments'
+
+2026-02-23 23:55:58,862 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 222, in edit_repair
+    dialog = RepairDialog(self, repair_id=repair_id, product_id=product_id, serial_no=serial_no,
+                          settings=self.settings)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 259, in __init__
+    self.setup_ui()
+    ~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 367, in setup_ui
+    self.restore_column_widths()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 929, in restore_column_widths
+    if col < self.table_shipments.columnCount():
+             ^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'RepairDialog' object has no attribute 'table_shipments'
+
+2026-02-23 23:56:00,011 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 222, in edit_repair
+    dialog = RepairDialog(self, repair_id=repair_id, product_id=product_id, serial_no=serial_no,
+                          settings=self.settings)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 259, in __init__
+    self.setup_ui()
+    ~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 367, in setup_ui
+    self.restore_column_widths()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 929, in restore_column_widths
+    if col < self.table_shipments.columnCount():
+             ^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'RepairDialog' object has no attribute 'table_shipments'
+
+2026-02-23 23:56:32,226 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 222, in edit_repair
+    dialog = RepairDialog(self, repair_id=repair_id, product_id=product_id, serial_no=serial_no,
+                          settings=self.settings)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 259, in __init__
+    self.setup_ui()
+    ~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 367, in setup_ui
+    self.restore_column_widths()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 929, in restore_column_widths
+    if col < self.table_shipments.columnCount():
+             ^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'RepairDialog' object has no attribute 'table_shipments'
+
+2026-02-23 23:56:42,917 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-23 23:56:45,605 [INFO] Main Window icon explicitly set from resource.
+2026-02-23 23:56:48,364 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 222, in edit_repair
+    dialog = RepairDialog(self, repair_id=repair_id, product_id=product_id, serial_no=serial_no,
+                          settings=self.settings)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 259, in __init__
+    self.setup_ui()
+    ~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 367, in setup_ui
+    self.restore_column_widths()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\repair_widget.py", line 929, in restore_column_widths
+    if col < self.table_shipments.columnCount():
+             ^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'RepairDialog' object has no attribute 'table_shipments'
+
+2026-02-23 23:57:55,457 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-23 23:57:58,377 [INFO] Main Window icon explicitly set from resource.
+2026-02-23 23:59:40,288 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-23 23:59:42,952 [INFO] Main Window icon explicitly set from resource.

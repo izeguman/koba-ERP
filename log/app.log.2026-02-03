@@ -1,0 +1,98 @@
+2026-02-03 21:07:48,621 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 21:07:54,348 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 21:09:46,594 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 21:09:56,466 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 21:16:25,625 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 21:16:28,292 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 21:20:32,423 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 21:20:35,404 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 21:30:01,648 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 21:30:04,594 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 21:30:24,442 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 21:30:27,293 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 21:32:04,775 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 21:32:07,853 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 21:44:24,642 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 21:44:27,059 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 21:49:23,242 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 21:49:25,920 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 21:54:14,858 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 21:54:17,571 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 21:58:46,737 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 21:58:49,353 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 22:07:34,075 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 22:07:36,709 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 22:11:26,213 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 22:11:28,917 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 22:25:48,581 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 22:25:51,307 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 22:32:36,505 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 22:32:39,104 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 22:35:13,029 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 22:35:15,671 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 22:43:33,460 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 22:43:43,018 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 22:46:16,986 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 22:46:19,591 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 22:49:46,213 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 22:49:48,854 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 22:57:43,586 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 22:57:46,214 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 23:07:57,524 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 23:08:00,090 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 23:18:16,056 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 23:18:18,770 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 23:19:34,903 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 23:19:37,472 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 23:22:17,051 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 23:22:17,351 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\run.py", line 105, in <module>
+    main()
+    ~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\run.py", line 81, in main
+    from app.ui.main_window import MainWindow
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\main_window.py", line 15, in <module>
+    from .delivery_widget import DeliveryWidget
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\delivery_widget.py", line 2167
+    abbr_name = None
+IndentationError: unexpected indent
+
+2026-02-03 23:23:30,615 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 23:23:30,921 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\run.py", line 105, in <module>
+    main()
+    ~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\run.py", line 81, in main
+    from app.ui.main_window import MainWindow
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\main_window.py", line 15, in <module>
+    from .delivery_widget import DeliveryWidget
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\delivery_widget.py", line 2469
+    QMessageBox.warning(self, "업데이트 오류", f"제품 마스터 정보 반영 중 오류가 발생했습니다:\n{e}")
+IndentationError: unexpected indent
+
+2026-02-03 23:23:37,610 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 23:23:37,906 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\run.py", line 105, in <module>
+    main()
+    ~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\run.py", line 81, in main
+    from app.ui.main_window import MainWindow
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\main_window.py", line 15, in <module>
+    from .delivery_widget import DeliveryWidget
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\delivery_widget.py", line 2469
+    QMessageBox.warning(self, "업데이트 오류", f"제품 마스터 정보 반영 중 오류가 발생했습니다:\n{e}")
+IndentationError: unexpected indent
+
+2026-02-03 23:26:32,237 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 23:26:34,828 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 23:32:50,129 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 23:32:52,756 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 23:36:37,442 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 23:36:40,092 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 23:44:23,345 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 23:44:26,010 [INFO] Main Window icon explicitly set from resource.
+2026-02-03 23:45:49,094 [INFO] === Application Started (Retention: 30 days) ===
+2026-02-03 23:45:51,669 [INFO] Main Window icon explicitly set from resource.

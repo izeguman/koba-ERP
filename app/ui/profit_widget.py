@@ -16,6 +16,7 @@ from matplotlib import rc
 import platform
 
 from ..db import get_yearly_financials, get_model_profitability, get_available_data_years
+from .utils import apply_table_resize_policy
 
 # 한글 폰트 설정
 system_name = platform.system()
@@ -25,8 +26,10 @@ rc('axes', unicode_minus=False)
 
 
 class ProfitWidget(QtWidgets.QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, settings=None):
         super().__init__(parent)
+        self.settings = settings
+        self.privacy_mode = False  # ✅ 프라이버시 모드 플래그
         self.setup_ui()
         self.load_data()
 
@@ -83,10 +86,46 @@ class ProfitWidget(QtWidgets.QWidget):
             "총 매출액(예상)", "총 매입액(예상)",  # 👈 새로 추가됨
             "대당 마진", "총 마진액(예상)"
         ])
-        self.table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         layout.addWidget(self.table)
+        
+        # ✅ 1. 기본 컬럼 너비 설정 (초기값)
+        self.table.setColumnWidth(0, 150) # 모델명
+        self.table.setColumnWidth(1, 80)  # 판매수량
+        self.table.setColumnWidth(2, 100) # 판매단가
+        self.table.setColumnWidth(3, 100) # 매입단가
+        self.table.setColumnWidth(4, 120) # 총 매출액
+        self.table.setColumnWidth(5, 120) # 총 매입액
+        self.table.setColumnWidth(6, 100) # 대당 마진
+        self.table.setColumnWidth(7, 120) # 총 마진액
+
+        # ✅ 2. 저장된 너비가 있으면 복원 (기본값 덮어쓰기)
+        if self.settings:
+            self.restore_column_widths()
+
+        # ✅ 3. 리사이즈 시그널 연결
+        self.table.horizontalHeader().sectionResized.connect(self.save_column_widths)
+        
+        # ✅ 4. 리사이즈 정책 적용 (마지막 컬럼 채우기 등)
+        apply_table_resize_policy(self.table)
+        
+        # ✅ [수정] 가로 스크롤바 활성화 (utils 정책 오버라이드)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table.horizontalHeader().setStretchLastSection(False)
+
+    def save_column_widths(self):
+        if not self.settings: return
+        widths = [self.table.columnWidth(col) for col in range(self.table.columnCount())]
+        self.settings.setValue("profit_table/column_widths", widths)
+
+    def restore_column_widths(self):
+        if not self.settings: return
+        widths = self.settings.value("profit_table/column_widths")
+        if widths:
+            for col, width in enumerate(widths):
+                if col < self.table.columnCount():
+                    self.table.setColumnWidth(col, int(width))
 
     def create_kpi_card(self, title, value, color="#333"):
         """간단한 KPI 카드 위젯 생성"""
@@ -108,6 +147,12 @@ class ProfitWidget(QtWidgets.QWidget):
 
     def load_data(self):
         from datetime import datetime
+        
+        # ✅ 프라이버시 모드이면 데이터 로드 중단 및 UI 초기화
+        # ✅ 프라이버시 모드이면 데이터 로드 중단 (UI는 set_privacy_mode에서 제어)
+        if self.privacy_mode:
+            return
+
         current_year = datetime.now().year
 
         # 1. 콤보박스 선택값 가져오기
@@ -346,3 +391,49 @@ class ProfitWidget(QtWidgets.QWidget):
 
             margin_color = "#0066cc" if sum_total_margin > 0 else "#dc3545"
             self.table.setItem(last_row, 7, create_subtotal_item(f"₩{sum_total_margin:,.0f}", margin_color))
+
+
+    def set_privacy_mode(self, enabled: bool):
+        """재무 정보 숨기기 설정"""
+        self.privacy_mode = enabled  # ✅ 상태 업데이트 필수
+
+        if enabled:
+            # 1. 모든 자식 위젯 숨기기
+            for i in range(self.layout().count()):
+                item = self.layout().itemAt(i)
+                if item.widget():
+                    item.widget().hide()
+                elif item.layout():
+                    for j in range(item.layout().count()):
+                        sub_item = item.layout().itemAt(j)
+                        if sub_item.widget():
+                            sub_item.widget().hide()
+
+            # 2. 안내 메시지 라벨 표시
+            if not hasattr(self, 'lbl_privacy_message'):
+                self.lbl_privacy_message = QtWidgets.QLabel("프라이버시 모드가 활성화되어\n수익 분석 정보를 볼 수 없습니다.", self)
+                self.lbl_privacy_message.setStyleSheet("font-size: 20px; font-weight: bold; color: #666;")
+                self.lbl_privacy_message.setAlignment(Qt.AlignCenter)
+                self.layout().addWidget(self.lbl_privacy_message)
+            
+            self.lbl_privacy_message.show()
+
+        else:
+            # 1. 안내 메시지 숨기기
+            if hasattr(self, 'lbl_privacy_message'):
+                self.lbl_privacy_message.hide()
+
+            # 2. 모든 자식 위젯 보이기
+            for i in range(self.layout().count()):
+                item = self.layout().itemAt(i)
+                if item.widget():
+                    if item.widget() != getattr(self, 'lbl_privacy_message', None):
+                        item.widget().show()
+                elif item.layout():
+                    for j in range(item.layout().count()):
+                        sub_item = item.layout().itemAt(j)
+                        if sub_item.widget():
+                            sub_item.widget().show()
+
+            # ✅ 3. 데이터 로드 (보여줄 내용 갱신)
+            self.load_data()

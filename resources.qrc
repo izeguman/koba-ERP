@@ -1,0 +1,5 @@
+<!DOCTYPE RCC><RCC version="1.0">
+<qresource>
+    <file alias="icon.ico">app/ui/koba_erp_final.ico</file>
+</qresource>
+</RCC>

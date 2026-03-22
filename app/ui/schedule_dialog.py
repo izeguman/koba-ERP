@@ -584,7 +584,7 @@ class ScheduleEditorWidget(QWidget):
 
             # ✅ [수정] 백그라운드 스레드에서 Outlook 동기화 실행 (미래 일정만)
             # 공용 모듈에서 가져온 Worker 사용
-            from .outlook_sysnc import OutlookSyncWorker
+            from .outlook_sync import OutlookSyncWorker
             self.sync_worker = OutlookSyncWorker(future_only=True)
             self.sync_worker.sync_finished.connect(lambda msg: print(f"Sync Finished: {msg}"))
             self.sync_worker.start()

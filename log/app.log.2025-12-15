@@ -1,0 +1,24 @@
+2025-12-15 21:58:28,030 [INFO] === Application Started (Retention: 30 days) ===
+2025-12-15 22:28:42,160 [INFO] === Application Started (Retention: 30 days) ===
+2025-12-15 22:28:42,282 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\run.py", line 83, in <module>
+    main()
+    ~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\run.py", line 78, in main
+    win = MainWindow()
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\main_window.py", line 94, in __init__
+    self.product_master_widget = ProductMasterWidget(settings=self.settings)
+                                 ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\product_master_widget.py", line 38, in __init__
+    self.setup_ui()
+    ~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\product_master_widget.py", line 178, in setup_ui
+    header.setSortIndicator(self.current_sort_column, self.current_sort_order)
+                            ^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'ProductMasterWidget' object has no attribute 'current_sort_column'
+
+2025-12-15 22:30:52,608 [INFO] === Application Started (Retention: 30 days) ===
+2025-12-15 22:31:09,714 [INFO] === Application Started (Retention: 30 days) ===
+2025-12-15 22:31:23,525 [INFO] === Application Started (Retention: 30 days) ===
+2025-12-15 22:36:45,306 [INFO] === Application Started (Retention: 30 days) ===

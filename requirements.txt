@@ -1,3 +1,7 @@
 PySide6
 python-dotenv
 python-dateutil
+matplotlib
+openpyxl
+pywin32
+google-generativeai

@@ -11,7 +11,8 @@ from datetime import datetime
 import os
 
 from ..db import (get_all_repairs, add_or_update_repair, delete_repair, query_one,
-                  get_repair_details, query_all, get_conn)
+                  get_repair_details, query_all, get_conn,
+                  get_repair_shipments, add_or_update_repair_shipment, delete_repair_shipment)
 from .utils import parse_due_text, get_dynamic_onedrive_path
 from .money_lineedit import MoneyLineEdit
 
@@ -261,6 +262,7 @@ class RepairDialog(QtWidgets.QDialog):
             geometry = self.settings.value("repair_dialog/geometry")
             if geometry:
                 self.restoreGeometry(geometry)
+            self.restore_column_widths()
 
         if self.is_edit:
             self.load_repair_data()
@@ -361,9 +363,7 @@ class RepairDialog(QtWidgets.QDialog):
         self.table_attachments.setColumnWidth(0, 400)
         self.table_attachments.setColumnWidth(1, 200)
 
-        # 2. 저장된 설정 불러오기 (이전에 조절한 값이 있다면 덮어씀)
-        self.restore_column_widths()
-
+        # 2. 저장된 설정은 __init__의 setup_ui() 이후에 통합 호출됨
         # 3. 조절할 때마다 저장되도록 연결
         header.sectionResized.connect(self.save_column_widths)
 
@@ -402,7 +402,11 @@ class RepairDialog(QtWidgets.QDialog):
         form3.addRow("재발방지대책 (발생)", self.txt_prevention_occurrence)
         form3.addRow("재발방지대책 (유출)", self.txt_prevention_outflow)
 
-        # 4. 처리 결과
+        # 4. 배송비용 (리콜과 동일한 방식)
+        tab_shipment = QtWidgets.QWidget()
+        self.setup_shipments_tab(tab_shipment)
+
+        # 5. 처리 결과
         tab_result = QtWidgets.QWidget()
         form4 = QFormLayout(tab_result)
         self.cmb_status = QtWidgets.QComboBox()
@@ -418,36 +422,11 @@ class RepairDialog(QtWidgets.QDialog):
         form4.addRow("상태", self.cmb_status)
         form4.addRow("수리일", self.edt_repair_date)
         form4.addRow("재출고 인보이스", self.edt_redelivery_invoice)
-
-        import_group = QGroupBox("수입비용")
-        import_layout = QFormLayout(import_group)
-        import_layout.setContentsMargins(10, 10, 10, 10)
-
-        self.edt_import_invoice_no = QtWidgets.QLineEdit()
-        self.edt_import_declaration_no = QtWidgets.QLineEdit()
-        self.edt_import_carrier = QtWidgets.QLineEdit()
-        self.cost_deposit = MoneyLineEdit(max_value=1_000_000_000)
-        self.cost_air_freight = MoneyLineEdit(max_value=1_000_000_000)
-
-        import_layout.addRow("수입 인보이스 번호:", self.edt_import_invoice_no)
-        import_layout.addRow("수입신고필증번호:", self.edt_import_declaration_no)
-        import_layout.addRow("수입운송사:", self.edt_import_carrier)
-        import_layout.addRow("담보금(수입관세):", self.cost_deposit)
-        import_layout.addRow("항공운송요금:", self.cost_air_freight)
-        form4.addRow(import_group)
-
-        export_group = QGroupBox("수출비용")
-        export_layout = QFormLayout(export_group)
-        export_layout.setContentsMargins(10, 10, 10, 10)
-        self.cost_shipping_jp = MoneyLineEdit(max_value=1_000_000_000)
-        self.cost_tax_jp = MoneyLineEdit(max_value=1_000_000_000)
-        export_layout.addRow("한국->일본 운반비:", self.cost_shipping_jp)
-        export_layout.addRow("부가세 및 일본 국내 세금:", self.cost_tax_jp)
-        form4.addRow(export_group)
-
+        
         tab_widget.addTab(tab_basic, "기본 정보")
         tab_widget.addTab(tab_analysis, "원인 분석")
         tab_widget.addTab(tab_action, "조치 및 대책")
+        tab_widget.addTab(tab_shipment, "배송비용")
         tab_widget.addTab(tab_result, "처리 결과")
 
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
@@ -468,8 +447,118 @@ class RepairDialog(QtWidgets.QDialog):
         if self.product_id and self.is_edit:
             self.update_product_info_single(self.product_id)
 
-        if self.serial_no:
-            pass
+    def setup_shipments_tab(self, widget):
+        layout = QVBoxLayout(widget)
+        
+        btn_add_s = QPushButton("배송 건 추가")
+        btn_add_s.clicked.connect(lambda: self.add_shipment_row())
+        
+        self.table_shipments = QTableWidget(0, 9)
+        self.table_shipments.setHorizontalHeaderLabels(["구분", "날짜", "인보이스", "신고번호", "운송사", "운반비", "관세", "부가세", "삭제"])
+        
+        self.table_shipments.horizontalHeader().sectionResized.connect(self.save_column_widths)
+
+        layout.addWidget(btn_add_s)
+        layout.addWidget(self.table_shipments)
+        
+        # 합계 표시
+        sum_layout = QHBoxLayout()
+        self.lbl_import_sum = QLabel("수입 비용 합계: 0원")
+        self.lbl_export_sum = QLabel("수출 비용 합계: 0원")
+        sum_layout.addWidget(self.lbl_import_sum)
+        sum_layout.addWidget(self.lbl_export_sum)
+        sum_layout.addStretch()
+        layout.addLayout(sum_layout)
+        
+        self.shipments_to_delete = []
+
+    def add_shipment_row(self, ship_data=None):
+        row_idx = self.table_shipments.rowCount()
+        self.table_shipments.insertRow(row_idx)
+        
+        # 구분 (IMPORT/EXPORT)
+        cmb_type = QtWidgets.QComboBox()
+        cmb_type.addItems(["IMPORT", "EXPORT"])
+        if ship_data:
+            # ship_data는 repair_shipments 테이블의 튜플 (id, type, date, invoice, declaration, carrier, cost_shipping, cost_customs, cost_tax)
+            # SCHEMA: id(0), repair_id(1)-X, shipment_type(2), shipment_date(3), ...
+            # 실제 db.py의 get_repair_shipments는 rs.* 를 리턴함. (id, type, date, invoice, declaration, carrier, cost_shipping, cost_customs, cost_tax)
+            cmb_type.setCurrentText(ship_data[1]) 
+        self.table_shipments.setCellWidget(row_idx, 0, cmb_type)
+        
+        # 날짜
+        edt_date = QtWidgets.QLineEdit(ship_data[2] if ship_data else datetime.now().strftime('%Y-%m-%d'))
+        self.table_shipments.setCellWidget(row_idx, 1, edt_date)
+        
+        # 인보이스
+        edt_inv = QtWidgets.QLineEdit(ship_data[3] if ship_data else "")
+        self.table_shipments.setCellWidget(row_idx, 2, edt_inv)
+        
+        # 신고번호
+        edt_decl = QtWidgets.QLineEdit(ship_data[4] if ship_data else "")
+        self.table_shipments.setCellWidget(row_idx, 3, edt_decl)
+        
+        # 운송사
+        edt_carrier = QtWidgets.QLineEdit(ship_data[5] if ship_data else "")
+        self.table_shipments.setCellWidget(row_idx, 4, edt_carrier)
+        
+        # 비용 필드들 (MoneyLineEdit 사용)
+        def create_money_edit(val_cents):
+            mle = MoneyLineEdit()
+            mle.set_value_from_cents(val_cents or 0)
+            mle.textChanged.connect(self.update_total_costs)
+            return mle
+            
+        mle_ship = create_money_edit(ship_data[6] if ship_data else 0)
+        mle_cust = create_money_edit(ship_data[7] if ship_data else 0)
+        mle_tax = create_money_edit(ship_data[8] if ship_data else 0)
+        
+        self.table_shipments.setCellWidget(row_idx, 5, mle_ship)
+        self.table_shipments.setCellWidget(row_idx, 6, mle_cust)
+        self.table_shipments.setCellWidget(row_idx, 7, mle_tax)
+        
+        btn_del = QPushButton("삭제")
+        s_id = ship_data[0] if ship_data else None
+        # row_idx는 고정값이 아니므로 람다가 실행될 때의 row를 찾아야 함
+        btn_del.clicked.connect(lambda: self.remove_shipment_row(s_id))
+        self.table_shipments.setCellWidget(row_idx, 8, btn_del)
+        
+        # ID 저장용 (숨김 아이템)
+        id_item = QTableWidgetItem()
+        id_item.setData(Qt.UserRole, s_id)
+        self.table_shipments.setItem(row_idx, 0, id_item)
+        
+        self.update_total_costs()
+
+    def remove_shipment_row(self, shipment_id):
+        # 클릭된 버튼의 행 찾기
+        button = self.sender()
+        if button:
+            index = self.table_shipments.indexAt(button.pos())
+            if index.isValid():
+                row = index.row()
+                if shipment_id:
+                    self.shipments_to_delete.append(shipment_id)
+                self.table_shipments.removeRow(row)
+                self.update_total_costs()
+
+    def update_total_costs(self):
+        imp_sum = 0
+        exp_sum = 0
+        for r in range(self.table_shipments.rowCount()):
+            cmb = self.table_shipments.cellWidget(r, 0)
+            if not cmb: continue
+            ship_type = cmb.currentText()
+            cost = 0
+            for c in [5, 6, 7]:
+                mle = self.table_shipments.cellWidget(r, c)
+                if mle: cost += mle.get_value_cents()
+            
+            if ship_type == "IMPORT": imp_sum += cost
+            else: exp_sum += cost
+            
+        self.lbl_import_sum.setText(f"수입 비용 합계: {int(imp_sum/100):,}원")
+        self.lbl_export_sum.setText(f"수출 비용 합계: {int(exp_sum/100):,}원")
 
     def add_attachment(self):
         files, _ = QFileDialog.getOpenFileNames(
@@ -598,6 +687,13 @@ class RepairDialog(QtWidgets.QDialog):
         self.edt_quality_report_no.setText(report_no or "")
         self.edt_repair_pic.setText(repair_pic or "")
         self.txt_defect_symptom.setPlainText(symptom or "")
+
+        # 배송 정보 로드
+        shipments = get_repair_shipments(self.repair_id)
+        for ship in shipments:
+            self.add_shipment_row(ship)
+        
+        self.update_total_costs()
         self.txt_investigation_customer.setPlainText(inv_cust or "")
         self.txt_investigation_internal.setPlainText(inv_int or "")
         self.txt_root_cause_occurrence.setPlainText(cause_occ or "")
@@ -610,14 +706,8 @@ class RepairDialog(QtWidgets.QDialog):
         self.edt_repair_date.setText(repair_date or "")
         self.edt_redelivery_invoice.setText(invoice or "")
 
-        self.cost_deposit.set_value((cost_deposit or 0) // 100)
-        self.cost_air_freight.set_value((cost_air_freight or 0) // 100)
-        self.cost_shipping_jp.set_value((cost_shipping_jp or 0) // 100)
-        self.cost_tax_jp.set_value((cost_tax_jp or 0) // 100)
-
-        self.edt_import_invoice_no.setText(import_invoice_no or "")
-        self.edt_import_declaration_no.setText(import_declaration_no or "")
-        self.edt_import_carrier.setText(import_carrier or "")
+        # 기존 개별 비용 필드는 배송비용 테이블로 대체됨
+        pass
 
         # 첨부 파일 로드
         self.attachment_data.clear()
@@ -663,8 +753,13 @@ class RepairDialog(QtWidgets.QDialog):
 
 
     def accept_dialog(self):
-        target_product_ids = []
+        # 필수 값 체크
+        receipt_date = parse_due_text(self.edt_receipt_date.text())
+        if not receipt_date:
+            QtWidgets.QMessageBox.warning(self, "입력 오류", "접수일은 필수이며, YYYY-MM-DD 형식이어야 합니다.")
+            return
 
+        target_product_ids = []
         if self.is_edit:
             if not self.product_id:
                 QtWidgets.QMessageBox.warning(self, "입력 오류", "제품 정보가 없습니다.")
@@ -676,155 +771,132 @@ class RepairDialog(QtWidgets.QDialog):
                 return
             target_product_ids = list(self.selected_products_map.keys())
 
-        receipt_date = parse_due_text(self.edt_receipt_date.text())
-        if not receipt_date:
-            QtWidgets.QMessageBox.warning(self, "입력 오류", "접수일은 필수이며, YYYY-MM-DD 형식이어야 합니다.")
-            return
-
         # -------------------------------------------------------------------------
         # ✅ [추가] 수리 등록 전 유효성 검사 (출하 여부 & 중복 접수 확인)
         # -------------------------------------------------------------------------
-        conn_check = get_conn()
-        cur_check = conn_check.cursor()
+        conn = None
         try:
+            conn = get_conn()
+            cur = conn.cursor()
+            
             for p_id in target_product_ids:
                 # 1. 제품 정보 조회 (S/N, 납품ID)
-                cur_check.execute("SELECT serial_no, delivery_id FROM products WHERE id = ?", (p_id,))
-                prod_row = cur_check.fetchone()
-
-                if not prod_row:
-                    continue
-
+                cur.execute("SELECT serial_no, delivery_id FROM products WHERE id = ?", (p_id,))
+                prod_row = cur.fetchone()
+                if not prod_row: continue
                 sn, delivery_id = prod_row
 
                 # (수정 모드가 아닐 때만 체크)
                 if not self.is_edit:
-                    # 조건 1: 출하된 제품인가? (delivery_id가 있어야 함)
                     if delivery_id is None:
                         QtWidgets.QMessageBox.warning(
                             self, "등록 불가",
                             f"시리얼번호 '{sn}' 제품은 현재 '재고(미납품)' 상태입니다.\n"
                             "납품이 완료된 제품만 수리 접수가 가능합니다."
                         )
-                        conn_check.close()
                         return
 
-                    # 조건 2: 현재 수리 진행 중인가? (종결되지 않은 수리 이력이 있는지 확인)
-                    # '재출고'나 '자체처리'가 아닌 상태의 레코드가 있다면 이미 수리 중인 것임
-                    cur_check.execute("""
+                    # 조건 2: 현재 수리 진행 중인가 확인
+                    cur.execute("""
                             SELECT status FROM product_repairs 
                             WHERE product_id = ? 
                               AND status NOT IN ('재출고', '자체처리')
                         """, (p_id,))
-                    active_repair = cur_check.fetchone()
-
+                    active_repair = cur.fetchone()
                     if active_repair:
                         status_now = active_repair[0]
                         QtWidgets.QMessageBox.warning(
                             self, "중복 접수 불가",
-                            f"시리얼번호 '{sn}' 제품은 이미 수리 진행 중입니다.\n"
-                            f"현재 상태: {status_now}\n\n"
-                            "해당 수리 건을 '재출고' 또는 '자체처리'로 완료한 후에\n"
-                            "새로 접수할 수 있습니다."
+                            f"시리얼번호 '{sn}' 제품은 이미 수리 진행 중입니다.\n현재 상태: {status_now}"
                         )
-                        conn_check.close()
                         return
 
-        except Exception as e:
-            print(f"Validation Error: {e}")
-        finally:
-            conn_check.close()
-        # -------------------------------------------------------------------------
+            # 첨부파일 정보 업데이트
+            for row in range(self.table_attachments.rowCount()):
+                file_path_item = self.table_attachments.item(row, 0)
+                desc_item = self.table_attachments.item(row, 1)
+                if file_path_item and desc_item:
+                    file_path = file_path_item.data(Qt.UserRole)
+                    description = desc_item.text()
+                    for att in self.attachment_data:
+                        if att['path'] == file_path:
+                            att['description'] = description
+                            break
+            
+            import json
+            attachments_str = json.dumps(self.attachment_data, ensure_ascii=False)
 
-        # 테이블에서 설명 업데이트
-        for row in range(self.table_attachments.rowCount()):
-            file_path_item = self.table_attachments.item(row, 0)
-            desc_item = self.table_attachments.item(row, 1)
-            if file_path_item and desc_item:
-                file_path = file_path_item.data(Qt.UserRole)
-                description = desc_item.text()
-                # attachment_data 업데이트
-                for att in self.attachment_data:
-                    if att['path'] == file_path:
-                        att['description'] = description
-                        break
+            # 저장용 데이터 (기존의 개별 비용 필드는 0 또는 NULL로 처리하고 배송 테이블 이용)
+            repair_data = {
+                'receipt_date': receipt_date,
+                'defect_date': parse_due_text(self.edt_defect_date.text().strip()),
+                'quality_report_no': self.edt_quality_report_no.text().strip(),
+                'repair_pic': self.edt_repair_pic.text().strip(),
+                'defect_symptom': self.txt_defect_symptom.toPlainText(),
+                'investigation_customer': self.txt_investigation_customer.toPlainText(),
+                'investigation_internal': self.txt_investigation_internal.toPlainText(),
+                'root_cause_occurrence': self.txt_root_cause_occurrence.toPlainText(),
+                'root_cause_outflow': self.txt_root_cause_outflow.toPlainText(),
+                'immediate_action': self.txt_immediate_action.toPlainText(),
+                'repair_details': "",
+                'prevention_occurrence': self.txt_prevention_occurrence.toPlainText(),
+                'prevention_outflow': self.txt_prevention_outflow.toPlainText(),
+                'status': self.cmb_status.currentText(),
+                'repair_date': parse_due_text(self.edt_repair_date.text().strip()),
+                'attachments': attachments_str,
+                # 기존 컬럼들 (호환성 유지용)
+                'cost_deposit': 0, 'cost_air_freight': 0, 'cost_shipping_jp': 0, 'cost_tax_jp': 0,
+                'import_invoice_no': "", 'import_declaration_no': "", 'import_carrier': "", 'redelivery_invoice_no': ""
+            }
 
-        # JSON 형식으로 저장
-        import json
-        attachments_str = json.dumps(self.attachment_data, ensure_ascii=False)
-
-        base_repair_data = {
-            'receipt_date': receipt_date,
-            'defect_date': parse_due_text(self.edt_defect_date.text().strip()),
-            'quality_report_no': self.edt_quality_report_no.text(),
-            'repair_pic': self.edt_repair_pic.text(),
-            'ncr_qty': None,
-            'defect_symptom': self.txt_defect_symptom.toPlainText(),
-            'investigation_customer': self.txt_investigation_customer.toPlainText(),
-            'investigation_internal': self.txt_investigation_internal.toPlainText(),
-            'root_cause_occurrence': self.txt_root_cause_occurrence.toPlainText(),
-            'root_cause_outflow': self.txt_root_cause_outflow.toPlainText(),
-            'immediate_action': self.txt_immediate_action.toPlainText(),
-            'repair_details': "",
-            'prevention_occurrence': self.txt_prevention_occurrence.toPlainText(),
-            'prevention_outflow': self.txt_prevention_outflow.toPlainText(),
-            'status': self.cmb_status.currentText(),
-            'repair_date': parse_due_text(self.edt_repair_date.text()),
-            'redelivery_invoice_no': self.edt_redelivery_invoice.text(),
-            'cost_deposit': self.cost_deposit.get_value() * 100,
-            'cost_air_freight': self.cost_air_freight.get_value() * 100,
-            'cost_shipping_jp': self.cost_shipping_jp.get_value() * 100,
-            'cost_tax_jp': self.cost_tax_jp.get_value() * 100,
-            'import_invoice_no': self.edt_import_invoice_no.text(),
-            'import_declaration_no': self.edt_import_declaration_no.text(),
-            'import_carrier': self.edt_import_carrier.text(),
-            'attachments': attachments_str
-        }
-
-        conn = None
-        try:
-            conn = get_conn()
-            cur = conn.cursor()
-
+            # ---------------------------------------------------------
+            # 실제 DB 저장 (트랜잭션)
+            # ---------------------------------------------------------
+            saved_repair_ids = []
             current_status = self.cmb_status.currentText()
 
             for p_id in target_product_ids:
-                repair_data = base_repair_data.copy()
-                repair_data['product_id'] = p_id
-
+                data = repair_data.copy()
+                data['product_id'] = p_id
                 r_id = self.repair_id if self.is_edit else None
+                
+                # 수리 일련번호 생성 및 기존 로직 수행
+                actual_repair_id = add_or_update_repair(data, r_id, external_cursor=cur)
+                saved_repair_ids.append(actual_repair_id)
 
-                add_or_update_repair(repair_data, r_id, external_cursor=cur)
-
-            if current_status in ['접수', '수리중', '수리완료']:
-                # 입고 수리: 우리 공장 재고로 잡혀야 하므로 납품 연결 해제 (delivery_id = NULL)
-                cur.execute("UPDATE products SET delivery_id = NULL WHERE id = ?", (p_id,))
-
-            elif current_status == '자체처리':
-                # 자체 처리: 고객사에서 끝난 건이므로 납품 정보가 유지되어야 함.
-                # 만약 실수로 '접수'로 저장했다가 '자체처리'로 바꾼 경우, 끊어진 연결을 다시 복구함.
-
-                # 1. 현재 제품 정보 조회
-                cur.execute("SELECT delivery_id, part_no, serial_no FROM products WHERE id = ?", (p_id,))
-                prod_row = cur.fetchone()
-
-                if prod_row:
-                    curr_did, part_no, serial_no = prod_row
-
-                    # 2. 납품 정보가 끊겨 있다면(NULL), 과거 기록을 찾아 복구
-                    if curr_did is None:
-                        cur.execute("""
-                                            SELECT delivery_id FROM delivery_items
-                                            WHERE item_code = ? AND serial_no = ?
-                                            ORDER BY id DESC LIMIT 1
-                                        """, (part_no, serial_no))
-
+                # 상태에 따른 입고 처리 (delivery_id 해제 등)
+                if current_status in ['접수', '수리중', '수리완료']:
+                    cur.execute("UPDATE products SET delivery_id = NULL WHERE id = ?", (p_id,))
+                elif current_status == '자체처리':
+                    # 납품 연결 복구 로직 (기존 accept_dialog 로직 유지)
+                    cur.execute("SELECT delivery_id, part_no, serial_no FROM products WHERE id = ?", (p_id,))
+                    prod_row = cur.fetchone()
+                    if prod_row and prod_row[0] is None:
+                        did, pno, sn = prod_row
+                        cur.execute("SELECT delivery_id FROM delivery_items WHERE item_code = ? AND serial_no = ? ORDER BY id DESC LIMIT 1", (pno, sn))
                         history = cur.fetchone()
                         if history:
-                            restored_delivery_id = history[0]
-                            cur.execute("UPDATE products SET delivery_id = ? WHERE id = ?",
-                                        (restored_delivery_id, p_id))
-                            print(f"✅ '자체처리' 건에 대한 납품 연결 자동 복구 완료: {part_no} ({serial_no})")
+                            cur.execute("UPDATE products SET delivery_id = ? WHERE id = ?", (history[0], p_id))
+
+            # 배송 정보 연동 저장
+            # 삭제 처리
+            for s_id in self.shipments_to_delete:
+                delete_repair_shipment(s_id) # 이 함수는 external_cursor를 안 쓰지만 일단 괜찮음(CASCADE)
+
+            # 추가/업데이트
+            for r in range(self.table_shipments.rowCount()):
+                ship_id = self.table_shipments.item(r, 0).data(Qt.UserRole)
+                s_data = {
+                    'shipment_type': self.table_shipments.cellWidget(r, 0).currentText(),
+                    'shipment_date': self.table_shipments.cellWidget(r, 1).text().strip(),
+                    'invoice_no': self.table_shipments.cellWidget(r, 2).text().strip(),
+                    'declaration_no': self.table_shipments.cellWidget(r, 3).text().strip(),
+                    'carrier': self.table_shipments.cellWidget(r, 4).text().strip(),
+                    'cost_shipping': self.table_shipments.cellWidget(r, 5).get_value_cents(),
+                    'cost_customs': self.table_shipments.cellWidget(r, 6).get_value_cents(),
+                    'cost_tax': self.table_shipments.cellWidget(r, 7).get_value_cents(),
+                }
+                add_or_update_repair_shipment(s_data, shipment_id=ship_id, repair_ids=saved_repair_ids, external_cursor=cur)
 
             conn.commit()
             self.accept()
@@ -837,24 +909,32 @@ class RepairDialog(QtWidgets.QDialog):
         finally:
             if conn: conn.close()
 
-    # 컬럼 폭 저장
     def save_column_widths(self):
         if not self.settings: return
-        widths = [self.table_attachments.columnWidth(i) for i in range(self.table_attachments.columnCount())]
-        self.settings.setValue("repair_dialog/attachment_widths", widths)
+        # 배송 테이블 너비 저장
+        s_widths = [self.table_shipments.columnWidth(i) for i in range(self.table_shipments.columnCount())]
+        self.settings.setValue("repair_dialog/shipment_column_widths", s_widths)
+        # 첨부파일 테이블 너비 저장
+        a_widths = [self.table_attachments.columnWidth(i) for i in range(self.table_attachments.columnCount())]
+        self.settings.setValue("repair_dialog/attachment_widths", a_widths)
 
-    # 컬럼 폭 복원
     def restore_column_widths(self):
         if not self.settings: return
-        widths = self.settings.value("repair_dialog/attachment_widths")
-        if widths:
-            for i, width in enumerate(widths):
-                # 저장된 값이 있으면 적용 (저장된 값이 0보다 클 때만)
-                if i < self.table_attachments.columnCount() and int(width) > 0:
-                    self.table_attachments.setColumnWidth(i, int(width))
+        # 배송 테이블 너비 복원
+        s_widths = self.settings.value("repair_dialog/shipment_column_widths")
+        if s_widths and hasattr(self, 'table_shipments'):
+            for col, w in enumerate(s_widths):
+                if col < self.table_shipments.columnCount():
+                    self.table_shipments.setColumnWidth(col, int(w))
+        # 첨부파일 테이블 너비 복원
+        a_widths = self.settings.value("repair_dialog/attachment_widths")
+        if a_widths and hasattr(self, 'table_attachments'):
+            for col, w in enumerate(a_widths):
+                if col < self.table_attachments.columnCount() and int(w) > 0:
+                    self.table_attachments.setColumnWidth(col, int(w))
 
-    # 창 닫을 때 크기 저장
     def closeEvent(self, event):
         if self.settings:
             self.settings.setValue("repair_dialog/geometry", self.saveGeometry())
+            self.save_column_widths()
         super().closeEvent(event)

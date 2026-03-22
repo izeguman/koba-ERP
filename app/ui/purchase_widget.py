@@ -12,6 +12,9 @@ from .autocomplete_widgets import AutoCompleteLineEdit
 from .money_lineedit import MoneyLineEdit
 from .utils import parse_due_text, apply_table_resize_policy
 from ..db import is_purchase_completed, calculate_fifo_allocation_margins
+from .report_dialogs import PurchaseReportDialog
+from .document_generator import get_next_po_serial, generate_purchase_order
+from .utils import resource_path
 
 
 def format_money(val: float | None) -> str:
@@ -171,6 +174,10 @@ class PurchaseWidget(QtWidgets.QWidget):
         layout.addWidget(self.table)
 
         apply_table_resize_policy(self.table)
+        
+        # ✅ [수정] 가로 스크롤바 활성화 (utils 정책 오버라이드)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table.horizontalHeader().setStretchLastSection(False)
 
     def toggle_show_all(self, checked: bool):
         self.show_all = checked
@@ -194,11 +201,45 @@ class PurchaseWidget(QtWidgets.QWidget):
                 if col < self.table.columnCount():
                     self.table.setColumnWidth(col, int(width))
 
+    def set_privacy_mode(self, enabled: bool):
+        """재무 정보 숨기기 설정"""
+        # 발주금액(원): 5번 컬럼
+        
+        if enabled:
+            # 숨기기 전 저장
+            if not self.table.isColumnHidden(5):
+                 self._purchase_temp_widths = [self.table.columnWidth(col) for col in range(self.table.columnCount())]
+            self.table.setColumnHidden(5, True)
+        else:
+            self.table.setColumnHidden(5, False)
+            
+             # 복원
+            if hasattr(self, '_purchase_temp_widths') and self._purchase_temp_widths:
+                # 리사이즈 시그널을 차단하여 AdjacentColumnResizer 간섭 방지
+                header = self.table.horizontalHeader()
+                blocker = QSignalBlocker(header)
+                try:
+                    for col, width in enumerate(self._purchase_temp_widths):
+                        if col < self.table.columnCount():
+                            if col == 5 and width < 50: width = 120
+                            self.table.setColumnWidth(col, width)
+                finally:
+                    blocker.unblock()
+        
     def show_context_menu(self, position):
         if self.table.itemAt(position) is None:
             return
 
         menu = QtWidgets.QMenu(self)
+
+        report_action = menu.addAction("상세 리포트 보기 (잔량 확인)")
+        report_action.triggered.connect(self.show_purchase_report)
+
+        # [NEW] 발주서 작성
+        po_action = menu.addAction("발주서 작성")
+        po_action.triggered.connect(self.create_po_document)
+        
+        menu.addSeparator()
 
         edit_action = menu.addAction("수정")
         edit_action.triggered.connect(self.edit_purchase)
@@ -542,11 +583,22 @@ class PurchaseWidget(QtWidgets.QWidget):
 
     def add_purchase(self):
         """새 발주 추가 (모달리스)"""
-        dialog = PurchaseDialog(self, is_edit=False)
+        dialog = PurchaseDialog(self, is_edit=False, settings=self.settings)
         dialog.accepted.connect(self.load_purchase_list)
         dialog.finished.connect(lambda: self.cleanup_purchase_dialog(dialog))
         dialog.show()
         self.active_purchase_dialogs.append(dialog)
+
+    def show_purchase_report(self):
+        """발주 상세 리포트 보기"""
+        purchase_data = self.get_selected_purchase()
+        if not purchase_data:
+            QtWidgets.QMessageBox.information(self, "알림", "리포트를 볼 발주를 선택해주세요.")
+            return
+            
+        purchase_id = purchase_data[0]
+        dialog = PurchaseReportDialog(purchase_id, self)
+        dialog.exec()
 
     def cleanup_purchase_dialog(self, dialog):
         if dialog in self.active_purchase_dialogs:
@@ -568,7 +620,7 @@ class PurchaseWidget(QtWidgets.QWidget):
                 dlg.activateWindow()
                 return
 
-        dialog = PurchaseDialog(self, is_edit=True, purchase_id=purchase_id)
+        dialog = PurchaseDialog(self, is_edit=True, purchase_id=purchase_id, settings=self.settings)
         dialog.accepted.connect(self.load_purchase_list)
         dialog.finished.connect(lambda: self.cleanup_purchase_dialog(dialog))
         dialog.show()
@@ -612,15 +664,79 @@ class PurchaseWidget(QtWidgets.QWidget):
             QtWidgets.QMessageBox.critical(self, "오류", f"발주 삭제 중 오류가 발생했습니다:\n{str(e)}")
 
 
+    def create_po_document(self):
+        """발주서 작성 (MF/TO 번호 생성 및 엑셀 저장)"""
+        purchase_data = self.get_selected_purchase()
+        if not purchase_data:
+            QtWidgets.QMessageBox.information(self, "알림", "발주서를 작성할 발주를 선택해주세요.")
+            return
+
+        purchase_id = purchase_data[0]
+        purchase_no = purchase_data[2]
+        
+        try:
+            # 1. 발주번호에서 일련번호 추출
+            # 예: TO2602-001 -> 001
+            serial_part = "001"
+            if purchase_no and '-' in purchase_no:
+                try:
+                    serial_part = purchase_no.split('-')[-1]
+                    # 숫자가 아니거나 길이가 다를 수 있으니 체크 (선택사항)
+                    if not serial_part.isdigit():
+                         # 만약 - 뒤에 숫자가 아니면... 일단 그대로 쓰거나 경고
+                         pass
+                except:
+                    pass
+            
+            # MF, TO 모두 동일한 일련번호 사용
+            mf_serial = serial_part
+            to_serial = serial_part
+
+            # 3. 템플릿 경로 확인
+            template_path = resource_path("app/templete/발주서.xlsx")
+            
+            import os
+            if not os.path.exists(template_path):
+                 # Fallback check
+                 fallback = "발주서.xlsx" 
+                 if os.path.exists(fallback):
+                     template_path = fallback
+                 else:
+                     QtWidgets.QMessageBox.critical(self, "오류", f"템플릿 파일을 찾을 수 없습니다:\n{template_path}\n\n'app/templete/' 폴더에 '발주서.xlsx' 파일이 있는지 확인해주세요.")
+                     return
+
+            # 4. 생성 호출
+            output_path = generate_purchase_order(purchase_id, purchase_no, mf_serial, to_serial, template_path)
+            
+            # 5. 성공 메시지
+            msg_box = QtWidgets.QMessageBox(self)
+            msg_box.setWindowTitle("완료")
+            msg_box.setText(f"발주서 파일이 생성되었습니다.\n\n저장 경로: {output_path}")
+            
+            open_folder_btn = msg_box.addButton("폴더 열기", QtWidgets.QMessageBox.ActionRole)
+            ok_btn = msg_box.addButton("확인", QtWidgets.QMessageBox.AcceptRole)
+            
+            msg_box.exec()
+            
+            if msg_box.clickedButton() == open_folder_btn:
+                folder_path = os.path.dirname(output_path)
+                os.startfile(folder_path)
+
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "오류", f"발주서 생성 중 오류 발생:\n{str(e)}")
+            import traceback
+            traceback.print_exc()
+
+
 class PurchaseDialog(QtWidgets.QDialog):
     """✅ 발주 입력 다이얼로그 (여러 품목 지원)"""
 
-    def __init__(self, parent=None, is_edit=False, purchase_id=None):
+    def __init__(self, parent=None, is_edit=False, purchase_id=None, settings=None):
         super().__init__(parent)
         self.is_edit = is_edit
         self.purchase_id = purchase_id
         self.items = []
-        self.settings = QSettings("KOBATECH", "ProductionManagement") # ✅ QSettings 추가
+        self.settings = settings
         self.setup_ui()
 
         if not self.is_edit:  # 새 발주 추가일 때만
@@ -663,12 +779,12 @@ class PurchaseDialog(QtWidgets.QDialog):
 
         input_form = QtWidgets.QFormLayout()
 
-        self.edt_item_code = AutoCompleteLineEdit()
+        # ✅ [변경] 기본 필터에 'PRODUCT' 추가 (모든 품목 검색 허용)
+        self.edt_item_code = AutoCompleteLineEdit(type_filter=['PART', 'MODULE', 'SUB_COMPONENT', 'PRODUCT', 'SELLABLE'])
         self.edt_item_code.setPlaceholderText("품목코드 입력 또는 검색")
         self.edt_item_code.product_selected.connect(self.on_product_selected)
 
         self.edt_rev = QtWidgets.QLineEdit()
-
         self.edt_purchase_desc = QtWidgets.QLineEdit()
         self.edt_purchase_desc.setMinimumWidth(400)
 
@@ -688,12 +804,21 @@ class PurchaseDialog(QtWidgets.QDialog):
         btn_add_item.clicked.connect(self.add_item)
         btn_add_item.setStyleSheet("padding: 8px 12px; font-weight: bold;")
 
-        input_form.addRow("품목코드", self.edt_item_code)
+        input_form.addRow("품목코드", self.edt_item_code) # ✅ 레이아웃 대신 입력창 직접 추가
         input_form.addRow("Rev", self.edt_rev)
         input_form.addRow("발주내용*", self.edt_purchase_desc)
         input_form.addRow("수량", self.sp_qty)
-        input_form.addRow("단가(원)", self.edt_unit_price)
-        input_form.addRow("", self.cb_update_master)
+
+        # ✅ 프라이버시 모드 확인
+        is_privacy = False
+        if self.settings and self.settings.value("view/privacy_mode", False, type=bool):
+            is_privacy = True
+
+        # 프라이버시 모드가 아닐 때만 단가 표시
+        if not is_privacy:
+            input_form.addRow("단가(원)", self.edt_unit_price)
+            input_form.addRow("", self.cb_update_master)
+        
         input_form.addRow("", btn_add_item)
 
         item_layout.addLayout(input_form)
@@ -708,10 +833,12 @@ class PurchaseDialog(QtWidgets.QDialog):
         self.item_table.itemDoubleClicked.connect(self.edit_item)
         self.item_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.item_table.customContextMenuRequested.connect(self.show_item_context_menu)
+        
+
 
         header = self.item_table.horizontalHeader()
-        for col in range(6):
-            header.setSectionResizeMode(col, QHeaderView.Interactive)
+        # for col in range(6):
+        #     header.setSectionResizeMode(col, QHeaderView.Interactive)
 
         self.item_table.setColumnWidth(0, 120)
         self.item_table.setColumnWidth(1, 60)
@@ -720,40 +847,62 @@ class PurchaseDialog(QtWidgets.QDialog):
         self.item_table.setColumnWidth(4, 100)
         self.item_table.setColumnWidth(5, 120)
 
+        # ✅ 프라이버시 모드 적용: 컬럼 숨기기
+        if is_privacy:
+            self.item_table.setColumnHidden(4, True) # 단가(원)
+            self.item_table.setColumnHidden(5, True) # 금액(원)
+
+        apply_table_resize_policy(self.item_table)
+        
+        # ✅ [수정] 가로 스크롤바 활성화 (utils 정책 오버라이드)
+        self.item_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.item_table.horizontalHeader().setStretchLastSection(False)
+
+
         item_layout.addWidget(self.item_table)
+
+
 
         # ✅ 이 금액 표시 및 직접 입력
         total_layout = QtWidgets.QHBoxLayout()
         total_layout.addStretch()
 
-        total_layout.addWidget(QtWidgets.QLabel("이 발주금액:"))
+        # ✅ 프라이버시 모드가 아닐 때만 총액 표시
+        if not is_privacy:
+            total_layout.addWidget(QtWidgets.QLabel("이 발주금액:"))
+            # ✅ 계산된 금액 표시 (읽기 전용)
+            self.lbl_calculated_amount = QtWidgets.QLabel("0")
+            self.lbl_calculated_amount.setStyleSheet("font-weight: bold; font-size: 14px; color: #666;")
+            total_layout.addWidget(self.lbl_calculated_amount)
+            total_layout.addWidget(QtWidgets.QLabel("원"))
 
-        # ✅ 계산된 금액 표시 (읽기 전용)
-        self.lbl_calculated_amount = QtWidgets.QLabel("0")
-        self.lbl_calculated_amount.setStyleSheet("font-weight: bold; font-size: 14px; color: #666;")
-        total_layout.addWidget(self.lbl_calculated_amount)
-        total_layout.addWidget(QtWidgets.QLabel("원"))
+            total_layout.addSpacing(20)
 
-        total_layout.addSpacing(20)
-
-        # ✅ 실제 발주금액 입력
-        total_layout.addWidget(QtWidgets.QLabel("→ 실제 발주금액:"))
-        self.edt_total_amount = MoneyLineEdit(max_value=10_000_000_000)
-        self.edt_total_amount.setPlaceholderText("직접 입력 (선택)")
-        self.edt_total_amount.setMinimumWidth(150)
-        self.edt_total_amount.setStyleSheet("background-color: #fffacd;")  # 노란 배경
-        total_layout.addWidget(self.edt_total_amount)
-        total_layout.addWidget(QtWidgets.QLabel("원"))
+            # ✅ 실제 발주금액 입력
+            total_layout.addWidget(QtWidgets.QLabel("→ 실제 발주금액:"))
+            self.edt_total_amount = MoneyLineEdit(max_value=10_000_000_000)
+            self.edt_total_amount.setPlaceholderText("직접 입력 (선택)")
+            self.edt_total_amount.setMinimumWidth(150)
+            self.edt_total_amount.setStyleSheet("background-color: #fffacd;")  # 노란 배경
+            total_layout.addWidget(self.edt_total_amount)
+            total_layout.addWidget(QtWidgets.QLabel("원"))
+        else:
+             # 참조 오류 방지를 위해 더미 생성 (보이지 않게)
+            self.lbl_calculated_amount = QtWidgets.QLabel("0")
+            self.lbl_calculated_amount.setVisible(False)
+            self.edt_total_amount = MoneyLineEdit()
+            self.edt_total_amount.setVisible(False)
 
         item_layout.addLayout(total_layout)
 
-        # ✅ 안내 메시지
-        note_label = QtWidgets.QLabel(
-            "※ 실제 발주금액을 입력하지 않으면 품목별 단가 × 수량의 합계가 사용됩니다."
-        )
-        note_label.setStyleSheet("color: #666; font-size: 10px; font-style: italic;")
-        note_label.setAlignment(Qt.AlignRight)
-        item_layout.addWidget(note_label)
+        # ✅ 안내 메시지 (프라이버시 모드 아닐 때만)
+        if not is_privacy:
+            note_label = QtWidgets.QLabel(
+                "※ 실제 발주금액을 입력하지 않으면 품목별 단가 × 수량의 합계가 사용됩니다."
+            )
+            note_label.setStyleSheet("color: #666; font-size: 10px; font-style: italic;")
+            note_label.setAlignment(Qt.AlignRight)
+            item_layout.addWidget(note_label)
 
         # 연결할 주문
         order_group = QtWidgets.QGroupBox("연결할 주문번호 (OA 발송됨, 청구 미완료)")
@@ -761,7 +910,7 @@ class PurchaseDialog(QtWidgets.QDialog):
 
         self.order_list = QtWidgets.QListWidget()
         self.order_list.setSelectionMode(QtWidgets.QAbstractItemView.MultiSelection)
-        self.order_list.setMaximumHeight(120)
+        # self.order_list.setMaximumHeight(120)  # ✅ [수정] 높이 제한 제거 (창 크기에 따라 늘어나도록)
         self.order_list.setStyleSheet("""
                     QListWidget::item:selected {
                         background-color: #0078d4;
@@ -784,6 +933,8 @@ class PurchaseDialog(QtWidgets.QDialog):
         main_layout.addWidget(item_group)
         main_layout.addWidget(order_group)
         main_layout.addWidget(btns)
+
+
 
     def on_product_selected(self, product_info):
         """제품 선택 시 정보 자동 입력"""
@@ -961,25 +1112,6 @@ class PurchaseDialog(QtWidgets.QDialog):
             for item in self.items
         )
 
-        # ✅ [추가] 반올림 설정 적용
-        enabled = self.settings.value("calculations/purchase_rounding_enabled", False, type=bool)
-        unit = self.settings.value("calculations/purchase_rounding_unit", 1, type=int)
-
-        if enabled and unit > 1:
-            # unit(10) -> ndigits(-1), unit(100) -> ndigits(-2)
-            unit_to_digits = {10: -1, 100: -2, 1000: -3}
-            ndigits = unit_to_digits.get(unit, 0)
-            if ndigits != 0:
-                new_total = round(new_total, ndigits)
-
-        # 3. '계산된 금액' 라벨은 항상 새로운 합계로 업데이트합니다.
-        self.lbl_calculated_amount.setText(f"{new_total:,}")
-
-        # 4. [핵심 로직] '실제 발주금액'이 이전 합계와 동일한 경우 (사용자가 수정하지 않은 경우),
-        #    새로운 합계로 함께 업데이트합니다.
-        if current_actual_amount == old_calculated_amount:
-            self.edt_total_amount.set_value(new_total)
-
     def load_available_orders(self, purchase_id_to_include=None):
         """연결 가능한 주문 목록 로드 (수정 시 기존 연결 건 포함)"""
         # ✅ [수정] 인자로 받은 ID를 SQL 쿼리 함수에 전달
@@ -1117,6 +1249,7 @@ class PurchaseDialog(QtWidgets.QDialog):
                 f"품목 수: {len(self.items)}개\n"
                 f"발주금액: {actual_total if actual_total > 0 else calculated_total:,}원"
             )
+
             self.accept()
 
         except Exception as e:
@@ -1126,3 +1259,35 @@ class PurchaseDialog(QtWidgets.QDialog):
                 QtWidgets.QMessageBox.critical(self, "오류", f"발주 저장 중 오류가 발생했습니다:\n{str(e)}")
             import traceback
             traceback.print_exc()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # 다이얼로그가 보인 직후(레이아웃 완료 후)에 컬럼 폭 복원
+        QtCore.QTimer.singleShot(0, self.restore_column_widths)
+
+    def done(self, result):
+        """다이얼로그가 닫힐 때(OK, Cancel, X 등) 항상 호출됨"""
+        self.save_column_widths()
+        super().done(result)
+
+    def save_column_widths(self):
+        """테이블 컬럼 폭 저장"""
+        if not self.settings: return
+        widths = []
+        for col in range(self.item_table.columnCount()):
+            widths.append(self.item_table.columnWidth(col))
+        self.settings.setValue("purchase_dialog_item_table/column_widths", widths)
+
+    def restore_column_widths(self):
+        """테이블 컬럼 폭 복원"""
+        if not self.settings: return
+        widths = self.settings.value("purchase_dialog_item_table/column_widths")
+        if widths:
+            # 리사이저 간섭 방지
+            self.item_table.horizontalHeader().blockSignals(True)
+            try:
+                for col, width in enumerate(widths):
+                    if col < self.item_table.columnCount():
+                        self.item_table.setColumnWidth(col, int(width))
+            finally:
+                self.item_table.horizontalHeader().blockSignals(False)
