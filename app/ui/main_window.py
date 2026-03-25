@@ -505,7 +505,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self,
             "KOBATECH 생산 관리 시스템",
             "<h3>KOBATECH 생산 관리 시스템</h3>"
-            "<p>버전: 1.21.02</p>"
+            "<p>버전: 1.22.00</p>"
             "<p>제품 생산 및 재고 관리를 위한 통합 시스템</p>"
             "<br>"
             "<p><b>주요 기능:</b></p>"

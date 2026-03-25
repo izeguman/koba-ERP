@@ -7,14 +7,40 @@ import re
 import unicodedata
 import platform
 
-# ---------------------------------------------------------
-# 1. API 키 설정
-# ---------------------------------------------------------
-raw_api_key = "AIzaSyAquL8Mno2bGxB77WnSVXSTAVs-knk7slo"
-api_key = raw_api_key.strip()
+from dotenv import load_dotenv
 
-os.environ["GOOGLE_API_KEY"] = api_key
-genai.configure(api_key=api_key)
+# ---------------------------------------------------------
+# 1. API 키 설정 (보안 강화: 외부 파일에서 로드)
+# ---------------------------------------------------------
+def get_api_key():
+    # 1.1 .env 파일 확인
+    load_dotenv()
+    key = os.getenv("GEMINI_API_KEY")
+    if key: return key
+    
+    # 1.2 외부 파일 확인 (gemini_api_key.txt) - 배포 환경 고려
+    # 실행 파일 위치 등 다양한 경로 탐색
+    possible_paths = [
+        "gemini_api_key.txt",
+        os.path.join(os.path.dirname(__file__), "gemini_api_key.txt"),
+        os.path.join(os.getcwd(), "gemini_api_key.txt")
+    ]
+    for path in possible_paths:
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return f.read().strip()
+            except:
+                continue
+    return os.getenv("GOOGLE_API_KEY")
+
+api_key = get_api_key()
+
+if api_key:
+    os.environ["GOOGLE_API_KEY"] = api_key
+    genai.configure(api_key=api_key)
+else:
+    print("⚠️ 경고: Gemini API 키를 찾을 수 없습니다. .env 또는 gemini_api_key.txt를 확인하세요.")
 
 # ---------------------------------------------------------
 # 2. 검사 기준 (Criteria)

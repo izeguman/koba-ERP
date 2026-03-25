@@ -44,3 +44,7 @@ venv.bak/
 
 # Logs
 *.log
+
+# API Keys
+gemini_api_key.txt
+.env

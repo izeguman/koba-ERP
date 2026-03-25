@@ -1204,23 +1204,36 @@ class DeliveryDialog(QDialog):
             QMessageBox.information(self, "알림", "팔레트 계산을 수행할 품목을 선택해주세요.")
             return
 
-        # 선택된 항목 중 '제품(Product)' 레벨인 것만 필터링
-        target_items = []
-        target_products_data = []
+        # [수정] 중복 방지를 위해 set 사용 (제품 노드 기준)
+        target_items_set = set()
         
         for item in selected_items:
             data = item.data(0, Qt.UserRole)
-            if data and 'product_name' in data: # 제품 노드
-                target_items.append(item)
-                target_products_data.append(data)
-            elif data and data.get('type') == 'purchase':
-                # 발주 노드 선택 시 하위 모든 제품 포함
+            if not data: continue
+
+            # 1. 제품(Product) 레벨 노드인 경우 직접 추가
+            if 'product_name' in data and data.get('type') not in ['order', 'purchase']:
+                target_items_set.add(item)
+            
+            # 2. 발주(Purchase) 레벨 노드인 경우 하위 모든 제품 추가
+            elif data.get('type') == 'purchase':
                 for i in range(item.childCount()):
                     child = item.child(i)
                     c_data = child.data(0, Qt.UserRole)
-                    if c_data: 
-                        target_items.append(child)
-                        target_products_data.append(c_data)
+                    if c_data and 'product_name' in c_data: 
+                        target_items_set.add(child)
+            
+            # 3. 주문(Order) 레벨 노드인 경우 하위 모든 발주의 모든 제품 추가
+            elif data.get('type') == 'order':
+                for i in range(item.childCount()):
+                    po_child = item.child(i)
+                    for j in range(po_child.childCount()):
+                        p_child = po_child.child(j)
+                        p_data = p_child.data(0, Qt.UserRole)
+                        if p_data and 'product_name' in p_data:
+                            target_items_set.add(p_child)
+
+        target_items = list(target_items_set)
 
         if not target_items:
             QMessageBox.information(self, "알림", "선택된 항목에 제품이 없습니다.")
@@ -2226,37 +2239,33 @@ class PalletCalculationDialog(QDialog):
         
         # Input Table
         self.table = QTableWidget()
-        self.table.setColumnCount(8)
-        self.table.setHorizontalHeaderLabels(["품목코드", "수량", "L (mm)", "W (mm)", "H (mm)", "무게 (kg)", "박스당 제품수량", "최대단수"])
+        self.table.setColumnCount(9)
+        self.table.setHorizontalHeaderLabels(["품목코드", "제품명", "수량", "L (mm)", "W (mm)", "H (mm)", "무게 (kg)", "박스당 제품수량", "최대단수"])
         
         header = self.table.horizontalHeader()
-        # 기본적으로 Stretch 사용하되, 특정 컬럼 너비 조정
         header.setSectionResizeMode(QHeaderView.Interactive)
-        
-        # 기본적으로 모든 컬럼을 Interactive(사용자 조절 가능)로 설정
-        # 초기 폭은 내용을 기준으로 잡거나(ResizeToContents) 고정값 사용 후 Interactive 순서로 적용
         
         # 0: Code
         header.setSectionResizeMode(0, QHeaderView.Interactive) 
-        
-        # 1: Qty
+        # 1: Name
         header.setSectionResizeMode(1, QHeaderView.Interactive)
-        
-        # 2,3,4: L,W,H
+        # 2: Qty
         header.setSectionResizeMode(2, QHeaderView.Interactive)
+        # 3,4,5: L,W,H
         header.setSectionResizeMode(3, QHeaderView.Interactive)
         header.setSectionResizeMode(4, QHeaderView.Interactive)
-        
-        # 5: Weight
-        self.table.setColumnWidth(5, 70) 
         header.setSectionResizeMode(5, QHeaderView.Interactive)
         
-        # 6: Items Per Box
+        # 6: Weight
+        self.table.setColumnWidth(6, 70) 
         header.setSectionResizeMode(6, QHeaderView.Interactive)
         
-        # 7: Max Layer
-        self.table.setColumnWidth(7, 70)
+        # 7: Items Per Box
         header.setSectionResizeMode(7, QHeaderView.Interactive)
+        
+        # 8: Max Layer
+        self.table.setColumnWidth(8, 70)
+        header.setSectionResizeMode(8, QHeaderView.Interactive)
 
         layout.addWidget(self.table)
         
@@ -2332,16 +2341,21 @@ class PalletCalculationDialog(QDialog):
             item_code_item.setFlags(item_code_item.flags() ^ Qt.ItemIsEditable) 
             self.table.setItem(row, 0, item_code_item)
             
+            # [신규] 제품명(별명) 표시 (수정 불가)
+            item_name_item = QTableWidgetItem(item.get('item_name', ''))
+            item_name_item.setFlags(item_name_item.flags() ^ Qt.ItemIsEditable)
+            self.table.setItem(row, 1, item_name_item)
+            
             qty_item = QTableWidgetItem(str(qty))
             qty_item.setFlags(qty_item.flags() ^ Qt.ItemIsEditable)
-            self.table.setItem(row, 1, qty_item)
+            self.table.setItem(row, 2, qty_item)
             
-            self.table.setItem(row, 2, QTableWidgetItem(str(specs.get('box_l', 0))))
-            self.table.setItem(row, 3, QTableWidgetItem(str(specs.get('box_w', 0))))
-            self.table.setItem(row, 4, QTableWidgetItem(str(specs.get('box_h', 0))))
-            self.table.setItem(row, 5, QTableWidgetItem(str(specs.get('box_weight', 0))))
-            self.table.setItem(row, 6, QTableWidgetItem(str(specs.get('items_per_box', 1))))
-            self.table.setItem(row, 7, QTableWidgetItem(str(specs.get('max_layer', 1))))
+            self.table.setItem(row, 3, QTableWidgetItem(str(specs.get('box_l', 0))))
+            self.table.setItem(row, 4, QTableWidgetItem(str(specs.get('box_w', 0))))
+            self.table.setItem(row, 5, QTableWidgetItem(str(specs.get('box_h', 0))))
+            self.table.setItem(row, 6, QTableWidgetItem(str(specs.get('box_weight', 0))))
+            self.table.setItem(row, 7, QTableWidgetItem(str(specs.get('items_per_box', 1))))
+            self.table.setItem(row, 8, QTableWidgetItem(str(specs.get('max_layer', 1))))
             
         conn.close()
         QTimer.singleShot(100, self.calculate)
@@ -2358,18 +2372,15 @@ class PalletCalculationDialog(QDialog):
                     except: return default
                     
                 code = self.table.item(row, 0).text()
-                qty = int(self.table.item(row, 1).text())
+                name = self.table.item(row, 1).text() # 제품명(별명) 컬럼에서 가져옴
+                qty = int(self.table.item(row, 2).text())
                 
-                # Retrieve Name from self.items_data (assuming stable order)
-                original = self.items_data[row]
-                name = original.get('item_name', code)
-                
-                box_l = get_val(2)
-                box_w = get_val(3)
-                box_h = get_val(4)
-                weight = float(self.table.item(row, 5).text() or 0)
-                per_box = get_val(6, 1)
-                max_layer = get_val(7, 1)
+                box_l = get_val(3)
+                box_w = get_val(4)
+                box_h = get_val(5)
+                weight = float(self.table.item(row, 6).text() or 0)
+                per_box = get_val(7, 1)
+                max_layer = get_val(8, 1)
                 
                 items_input.append({
                     'item_code': code,
@@ -2405,9 +2416,8 @@ class PalletCalculationDialog(QDialog):
         if hasattr(self, 'last_calc_result') and self.last_calc_result:
             res = self.last_calc_result
             
-            # 요약 저장용 텍스트 (DB용)
-            summary_text = res.get('summary_text') or res.get('pattern_str', '')
-            summary = summary_text
+            # 요약 저장용 텍스트 (DB용은 상세 내역 사용, 없으면 기본 요약)
+            summary = res.get('secondary_packaging_text') or res.get('summary_text') or res.get('pattern_str', '')
             
             current_text = self.delivery_widget.edt_secondary_packaging.text().strip()
             if summary not in current_text:
@@ -2416,7 +2426,41 @@ class PalletCalculationDialog(QDialog):
                 else:
                     new_text = summary
                 self.delivery_widget.edt_secondary_packaging.setText(new_text)
-            
+            # [추가] 각 트리 항목별로 계산된 사양 업데이트 (최종 저장을 위해)
+            for row in range(self.table.rowCount()):
+                item_code = self.table.item(row, 0).text()
+                
+                # 입력값 가져오기 (컬럼 인덱스 +1 조정)
+                try:
+                    box_l = int(float(self.table.item(row, 3).text() or 0))
+                    box_w = int(float(self.table.item(row, 4).text() or 0))
+                    box_h = int(float(self.table.item(row, 5).text() or 0))
+                    box_weight = float(self.table.item(row, 6).text() or 0)
+                    items_per_box = int(float(self.table.item(row, 7).text() or 1))
+                    max_layer = int(float(self.table.item(row, 8).text() or 1))
+                except ValueError:
+                    continue
+
+                # 해당 품목코드인 트리 아이템 찾아서 데이터 업데이트
+                for grouped_item in self.items_data:
+                    if grouped_item['item_code'] == item_code:
+                        for tree_item in grouped_item['tree_items']:
+                            d = tree_item.data(0, Qt.UserRole)
+                            if d:
+                                d['box_l'] = box_l
+                                d['box_w'] = box_w
+                                d['box_h'] = box_h
+                                d['box_weight'] = box_weight
+                                d['items_per_box'] = items_per_box
+                                d['max_layer'] = max_layer
+                                
+                                # 계산 결과도 일부 반영 (옵션)
+                                d['pallet_type'] = res.get('pallet_type')
+                                d['loading_pattern'] = summary # 요약 텍스트 저장
+                                d['boxes_per_pallet'] = 0 # 혼적 모드이므로 개별 계산 의미 없음 (0으로 처리하거나 적당히)
+                                
+                                tree_item.setData(0, Qt.UserRole, d)
+
             # [신규] 제품 마스터 업데이트 로직
             if self.chk_update_master.isChecked():
                 self.update_product_master_specs()
@@ -2434,14 +2478,14 @@ class PalletCalculationDialog(QDialog):
             for row in range(self.table.rowCount()):
                 item_code = self.table.item(row, 0).text()
                 
-                # 입력값 가져오기 (calculate 함수와 동일한 로직)
+                # 입력값 가져오기 (컬럼 인덱스 +1 조정)
                 try:
-                    box_l = int(float(self.table.item(row, 2).text() or 0))
-                    box_w = int(float(self.table.item(row, 3).text() or 0))
-                    box_h = int(float(self.table.item(row, 4).text() or 0))
-                    box_weight = float(self.table.item(row, 5).text() or 0)
-                    items_per_box = int(float(self.table.item(row, 6).text() or 1)) # 입수
-                    max_layer = int(float(self.table.item(row, 7).text() or 1))
+                    box_l = int(float(self.table.item(row, 3).text() or 0))
+                    box_w = int(float(self.table.item(row, 4).text() or 0))
+                    box_h = int(float(self.table.item(row, 5).text() or 0))
+                    box_weight = float(self.table.item(row, 6).text() or 0)
+                    items_per_box = int(float(self.table.item(row, 7).text() or 1)) # 입수
+                    max_layer = int(float(self.table.item(row, 8).text() or 1))
                 except ValueError:
                     continue # 숫자가 아니면 스킵
 

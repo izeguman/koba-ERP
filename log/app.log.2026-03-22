@@ -1,0 +1,38 @@
+2026-03-22 21:56:27,818 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-22 21:56:33,133 [INFO] Main Window icon explicitly set from resource.
+2026-03-22 22:01:57,072 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-22 22:02:00,708 [INFO] Main Window icon explicitly set from resource.
+2026-03-22 22:24:26,859 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-22 22:24:30,205 [INFO] Main Window icon explicitly set from resource.
+2026-03-22 22:36:04,419 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-22 22:36:07,722 [INFO] Main Window icon explicitly set from resource.
+2026-03-22 22:49:34,499 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-22 22:49:37,580 [INFO] Main Window icon explicitly set from resource.
+2026-03-22 22:52:41,508 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-22 22:52:44,488 [INFO] Main Window icon explicitly set from resource.
+2026-03-22 22:55:13,326 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-22 22:55:16,673 [INFO] Main Window icon explicitly set from resource.
+2026-03-22 22:58:09,878 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-22 22:58:13,066 [INFO] Main Window icon explicitly set from resource.
+2026-03-22 23:00:37,624 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-22 23:00:40,885 [INFO] Main Window icon explicitly set from resource.
+2026-03-22 23:03:32,960 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-22 23:03:36,095 [INFO] Main Window icon explicitly set from resource.
+2026-03-22 23:08:25,592 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-22 23:08:28,551 [INFO] Main Window icon explicitly set from resource.
+2026-03-22 23:10:52,844 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-22 23:10:59,011 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\run.py", line 105, in <module>
+    main()
+    ~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\run.py", line 81, in main
+    from app.ui.main_window import MainWindow
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\main_window.py", line 29, in <module>
+    from .outlook_sync import execute_outlook_operation_sync
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\outlook_sync.py", line 2, in <module>
+    import win32com.client
+ModuleNotFoundError: No module named 'win32com'
+
+2026-03-22 23:11:10,823 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-22 23:11:14,092 [INFO] Main Window icon explicitly set from resource.
