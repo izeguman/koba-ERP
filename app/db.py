@@ -3713,7 +3713,7 @@ def is_purchase_completed(purchase_id: int) -> bool:
 
     3. (二쇰Ц ?곌껐 ?? ?곌껐??紐⑤뱺 二쇰Ц??'泥?뎄 ?꾨즺'
 
-    4. (二쇰Ц 誘몄뿰寃??? 諛쒖＜??= ?앹궛??= ?⑺뭹??
+    4. (주분 미연결 시) 발주량 = 생산량 = 납품량(최초 납품 이력 포함)
 
     """
 
@@ -3777,7 +3777,7 @@ def is_purchase_completed(purchase_id: int) -> bool:
 
                 (SELECT COUNT(*) FROM products pr WHERE pr.purchase_id = p.id) as produced_qty,
 
-                (SELECT COUNT(*) FROM products pr WHERE pr.purchase_id = p.id AND pr.delivery_id IS NOT NULL) as delivered_qty,
+                (SELECT COUNT(*) FROM products pr WHERE pr.purchase_id = p.id AND (pr.delivery_id IS NOT NULL OR pr.delivered_at IS NOT NULL)) as delivered_qty,
 
                 (SELECT COUNT(*) FROM products pr WHERE pr.purchase_id = p.id AND pr.consumed_by_product_id IS NOT NULL) as consumed_qty
 

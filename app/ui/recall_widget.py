@@ -716,7 +716,8 @@ class RecallDialog(QtWidgets.QDialog):
                 if status in ['대기', '수리중']:
                     # 리콜 진행 중인 제품은 delivery_id를 NULL로 만들어 출고 가능 목록에 나오게 함
                     cur.execute("UPDATE products SET delivery_id = NULL WHERE id = ?", (p_id,))
-                # '완료', '자체처리' 시에는 명시적으로 건드리지 않음. (쿼리 필터링에 의존)
+                elif status in ['완료', '자체처리']:
+                    # 리콜 상황이 종료된 경우(완료/자체처리), 기존 납품 정보를 복원하여 재고 목록에서 다시 제외함
                     cur.execute("SELECT part_no, serial_no FROM products WHERE id = ?", (p_id,))
                     prod_info = cur.fetchone()
                     if prod_info:
