@@ -3890,19 +3890,12 @@ def check_and_update_order_completion(order_id: int, conn):
     # 2. ??二쇰Ц???곌껐??*'泥?뎄?꾨즺(invoice_done=1)'?? ?⑺뭹?ㅼ쓽 ?덈ぉ蹂?珥??섎웾
 
     cur.execute("""
-
         SELECT di.item_code, SUM(di.qty)
-
         FROM delivery_items di
-
         JOIN deliveries d ON di.delivery_id = d.id
-
         JOIN delivery_order_links dol ON d.id = dol.delivery_id
-
         WHERE dol.order_id = ? AND d.invoice_done = 1 AND di.item_code IS NOT NULL
-
         GROUP BY di.item_code
-
     """, (order_id,))
 
     delivered_qtys_done = {row[0]: row[1] for row in cur.fetchall()}
@@ -4207,12 +4200,71 @@ def calculate_fifo_allocation_margins():
 
 
 def get_available_purchases():
-
     """
-
-    '???쒗뭹 異붽?' ?깆뿉???ъ슜?섎뒗 諛쒖＜ 紐⑸줉 諛섑솚 (?섏젙?? FIFO ?좊떦 ?곸슜)
-
+    '제품 추가' 등에서 사용하는 발주 목록 반환 (수정: FIFO 할당 적용 및 완료된 건 제외)
     """
+    # 1. 기본 정보 조회
+    sql = """
+        SELECT
+            p.id,
+            p.purchase_no,
+            GROUP_CONCAT(pi.product_name, ' | ') as purchase_desc,
+            SUM(pi.qty) as ordered_qty, 
+            p.purchase_dt,
+            (SELECT COUNT(*) FROM products pr WHERE pr.purchase_id = p.id) as produced_qty,
+            (SELECT COUNT(*) FROM products pr 
+             WHERE pr.purchase_id = p.id AND (pr.delivery_id IS NOT NULL OR pr.delivered_at IS NOT NULL)) as delivered_qty,
+            (SELECT COUNT(*) FROM products pr
+             WHERE pr.purchase_id = p.id AND pr.consumed_by_product_id IS NOT NULL) as consumed_qty,
+            0 as dummy_linked_qty,
+            (SELECT pr.serial_no FROM products pr
+             WHERE pr.purchase_id = p.id AND pr.delivery_id IS NULL
+             ORDER BY pr.serial_no ASC LIMIT 1
+            ) as first_available_serial,
+            p.status
+        FROM purchases p
+        LEFT JOIN purchase_items pi ON p.id = pi.purchase_id
+        WHERE p.purchase_no IS NOT NULL
+        AND COALESCE(p.status, '발주') != '완료'
+        GROUP BY p.id
+        ORDER BY p.purchase_dt DESC
+    """
+    all_purchases = query_all(sql)
+
+    # [추가] FIFO 방식으로 정확한 여유 할당량 계산
+    fifo_margins = calculate_fifo_allocation_margins()
+
+    available_list = []
+    for row in all_purchases:
+        # row의 각 값을 변수에 할당 (컬럼 개수: 11개)
+        p_id, p_no, p_desc, ordered_qty, p_dt, produced_qty, delivered_qty, consumed_qty, _, first_serial, p_status = row
+
+        ordered_qty = ordered_qty or 0
+        produced_qty = produced_qty or 0
+        delivered_qty = delivered_qty or 0
+        consumed_qty = consumed_qty or 0
+
+        # [수정] 발주가 논리적으로 완료되었는지 최종 확인 (is_purchase_completed 사용)
+        if is_purchase_completed(p_id):
+            continue
+
+        # 재고 수량
+        stock_qty = produced_qty - delivered_qty - consumed_qty
+
+        # [수정] 할당 여유분 FIFO 계산 결과 사용 (dict 형태)
+        allocation_margin = fifo_margins.get(p_id, {})
+
+        # 필터링
+        production_needed = (produced_qty < ordered_qty)
+        stock_available = (stock_qty > 0)
+
+        if not production_needed and not stock_available:
+            continue
+
+        available_list.append(
+            (p_id, p_no, p_desc, ordered_qty, p_dt, stock_qty, allocation_margin, produced_qty, first_serial))
+
+    return available_list
 
     # 1. 湲곕낯 ?뺣낫 議고쉶 (湲곗〈 荑쇰━ ?ъ슜?섎릺 linked_order_qty 怨꾩궛? 臾댁떆)
 
@@ -6174,6 +6226,7 @@ def get_yearly_inventory_status_v2(year: int, include_consumed_in_unsold: bool =
     """
     
     cur.execute(sql, (str(year),))
+    
     rows = cur.fetchall()
     
     inventory_items = []

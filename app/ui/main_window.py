@@ -1460,6 +1460,8 @@ class MainWindow(QtWidgets.QMainWindow):
             incomp_bg = QColor(self.settings.value("colors/inventory_incomplete_bg", "#FFFFFF"))
             repair_fg = QColor(self.settings.value("colors/product_repaired_fg", "#006633"))
             repair_bg = QColor(self.settings.value("colors/product_repaired_bg", "#E8F5E9"))
+            recall_fg = QColor(self.settings.value("colors/product_recalled_fg", "#D35400")) # 주황색
+            recall_bg = QColor(self.settings.value("colors/product_recalled_bg", "#FFF3E0")) # 연한 주황색
 
             # 1. 일반 발주 제품
             sql = """
@@ -1495,7 +1497,8 @@ class MainWindow(QtWidgets.QMainWindow):
                          AND o.invoice_done = 0 
                     ),
                     MAX(pm.purchase_price_krw), -- 같은 item_code라도 rev 다를 수 있으니 Max
-                    MAX(pm.unit_price_jpy)
+                    MAX(pm.unit_price_jpy),
+                    MAX(CASE WHEN EXISTS (SELECT 1 FROM recall_items ri WHERE ri.product_id = pr.id) THEN 1 ELSE 0 END) as is_recall
                 
                 FROM purchase_items pi
                 JOIN purchases p ON pi.purchase_id = p.id
@@ -1518,7 +1521,8 @@ class MainWindow(QtWidgets.QMainWindow):
                     NULL,
                     0,
                     MAX(pm.purchase_price_krw),
-                    MAX(pm.unit_price_jpy)
+                    MAX(pm.unit_price_jpy),
+                    0 as is_recall
                 FROM products pr
                 LEFT JOIN product_master pm ON pr.part_no = pm.item_code 
                 WHERE pr.purchase_id IS NULL
@@ -1538,7 +1542,8 @@ class MainWindow(QtWidgets.QMainWindow):
                     MIN(pr.serial_no),
                     0,
                     0, -- 수리품 단가 0
-                    0
+                    0,
+                    0 as is_recall
                 FROM products pr
                 WHERE 
                     pr.delivery_id IS NULL
@@ -1589,7 +1594,7 @@ class MainWindow(QtWidgets.QMainWindow):
                  item_code, product_name, is_assembly, ordered_qty,
                  produced_qty, delivered_qty, consumed_qty,
                  free_stock_qty, next_serial_no, demand_qty,
-                 purchase_price_krw, unit_price_jpy) = row
+                 purchase_price_krw, unit_price_jpy, is_recall) = row
 
                 ordered_qty = ordered_qty or 0
                 produced_qty = produced_qty or 0
@@ -1597,6 +1602,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 consumed_qty = consumed_qty or 0
                 free_stock_qty = free_stock_qty or 0
                 demand_qty = demand_qty or 0
+                is_recall = (is_recall == 1)
                 
                 purchase_price_krw = purchase_price_krw or 0
                 unit_price_jpy = unit_price_jpy or 0
@@ -1626,6 +1632,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 # --- [상태 텍스트 로직 수정] ---
                 if is_repair_stock:
                     status_text, status_color = f"수리 재고 {inventory_qty_disp}개", "#006633"
+                elif is_recall:
+                    status_text, status_color = f"리콜 재고 {inventory_qty_disp}개", "#D35400"
                 elif is_assembly_stock:
                     status_text, status_color = f"조립 재고 {inventory_qty_disp}개", "#0d6efd"
                 elif delivered_qty > ordered_qty:
@@ -1694,6 +1702,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 bg = incomp_bg
                 if is_repair_stock:
                     fg, bg = repair_fg, repair_bg
+                elif is_recall:
+                    fg, bg = recall_fg, recall_bg
                 elif is_assembly_stock:
                     fg, bg = incomp_fg, incomp_bg
                 elif is_completed_for_palette:
