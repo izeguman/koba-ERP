@@ -5819,6 +5819,116 @@ def get_yearly_financials(filter_type='range', value=3):
 
 
 
+def get_expected_financials(year):
+
+    """
+
+    특정 연도의 예상 매출 및 예상 원가 조회
+
+    - 기준: order_shipments 테이블의 due_date (전체 납품 일정)
+
+    - 완료된 건과 예정된 건을 모두 포함하여 '해당 연도 전체의 매출 가능성'을 계산
+
+    """
+
+    from datetime import datetime
+
+    
+
+    sql = f"""
+
+        WITH shipment_sum AS (
+
+            -- 1. 개별 납품 일정이 등록된 항목들의 합계
+
+            SELECT 
+
+                SUM((s.ship_qty * oi.unit_price_cents / 100.0) * (COALESCE(er.rate, 900.0) / 100.0)) as rev,
+
+                SUM(s.ship_qty * (COALESCE(pm.purchase_price_krw, 0) / 100.0)) as cost
+
+            FROM order_shipments s
+
+            JOIN order_items oi ON s.order_item_id = oi.id
+
+            LEFT JOIN product_master pm ON oi.item_code = pm.item_code
+
+            LEFT JOIN exchange_rates er 
+
+                   ON er.year = CAST(strftime('%Y', s.due_date) AS INTEGER)
+
+                  AND er.month = CAST(strftime('%m', s.due_date) AS INTEGER)
+
+            WHERE strftime('%Y', s.due_date) = ?
+
+        ),
+
+        order_only_sum AS (
+
+            -- 2. 납품 일정이 아예 등록되지 않은 주문 항목들의 합계 (주문 최종기한 기준)
+
+            SELECT 
+
+                SUM((oi.qty * oi.unit_price_cents / 100.0) * (COALESCE(er.rate, 900.0) / 100.0)) as rev,
+
+                SUM(oi.qty * (COALESCE(pm.purchase_price_krw, 0) / 100.0)) as cost
+
+            FROM order_items oi
+
+            JOIN orders o ON oi.order_id = o.id
+
+            LEFT JOIN product_master pm ON oi.item_code = pm.item_code
+
+            LEFT JOIN exchange_rates er 
+
+                   ON er.year = CAST(strftime('%Y', o.final_due) AS INTEGER)
+
+                  AND er.month = CAST(strftime('%m', o.final_due) AS INTEGER)
+
+            WHERE strftime('%Y', o.final_due) = ?
+
+              AND NOT EXISTS (SELECT 1 FROM order_shipments s WHERE s.order_item_id = oi.id)
+
+        )
+
+        SELECT 
+
+            (COALESCE((SELECT rev FROM shipment_sum), 0) + COALESCE((SELECT rev FROM order_only_sum), 0)) as total_rev,
+
+            (COALESCE((SELECT cost FROM shipment_sum), 0) + COALESCE((SELECT cost FROM order_only_sum), 0)) as total_cost
+
+    """
+
+
+
+    row = query_all(sql, (str(year), str(year)))
+
+    
+
+    if row:
+
+        # query_all은 리스트를 반환하므로 첫 번째 항목 확인
+
+        r = row[0]
+
+        rev = r[0] or 0.0
+
+        cost = r[1] or 0.0
+
+        return {
+
+            'revenue': rev,
+
+            'cost': cost,
+
+            'profit': rev - cost
+
+        }
+
+    return {'revenue': 0, 'cost': 0, 'profit': 0}
+
+
+
 
 
 def get_model_profitability(filter_type='range', value=3):

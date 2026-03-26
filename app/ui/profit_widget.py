@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 from matplotlib import rc
 import platform
 
-from ..db import get_yearly_financials, get_model_profitability, get_available_data_years
+from ..db import get_yearly_financials, get_model_profitability, get_available_data_years, get_expected_financials
 from .utils import apply_table_resize_policy
 
 # 한글 폰트 설정
@@ -217,6 +217,24 @@ class ProfitWidget(QtWidgets.QWidget):
                 f"누적 판매 ({period_str})",
                 f"{total_prod:,}대",
                 "#666"
+            ))
+
+            # --- [추가] 올해 예상 실적 (Projections) ---
+            # 사용자가 요청한 '실시간 올해 목표 관리'를 위해 현재 연도의 전체 예상치를 가져옴
+            expected_data = get_expected_financials(current_year)
+            
+            # 예상 매출 카드
+            self.kpi_layout.addWidget(self.create_kpi_card(
+                f"{current_year}년 예상 매출",
+                f"{expected_data['revenue'] / 1000000:,.0f}백만",
+                "#00acc1" # 청록색 (예상치를 구분하기 위한 색상)
+            ))
+
+            # 예상 매출총이익 카드
+            self.kpi_layout.addWidget(self.create_kpi_card(
+                f"{current_year}년 예상 매출총이익",
+                f"{expected_data['profit'] / 1000000:,.0f}백만",
+                "#43a047" # 진한 녹색
             ))
 
         # 5. 차트 그리기
