@@ -2418,19 +2418,12 @@ class PalletCalculationDialog(QDialog):
             
             # 요약 저장용 텍스트 (DB용은 상세 내역 사용, 없으면 기본 요약)
             summary = res.get('secondary_packaging_text') or res.get('summary_text') or res.get('pattern_str', '')
+            self.delivery_widget.edt_secondary_packaging.setText(summary)
             
-            current_text = self.delivery_widget.edt_secondary_packaging.text().strip()
-            if summary not in current_text:
-                if current_text:
-                    new_text = f"{current_text} / {summary}"
-                else:
-                    new_text = summary
-                self.delivery_widget.edt_secondary_packaging.setText(new_text)
             # [추가] 각 트리 항목별로 계산된 사양 업데이트 (최종 저장을 위해)
             for row in range(self.table.rowCount()):
                 item_code = self.table.item(row, 0).text()
                 
-                # 입력값 가져오기 (컬럼 인덱스 +1 조정)
                 try:
                     box_l = int(float(self.table.item(row, 3).text() or 0))
                     box_w = int(float(self.table.item(row, 4).text() or 0))
@@ -2441,7 +2434,6 @@ class PalletCalculationDialog(QDialog):
                 except ValueError:
                     continue
 
-                # 해당 품목코드인 트리 아이템 찾아서 데이터 업데이트
                 for grouped_item in self.items_data:
                     if grouped_item['item_code'] == item_code:
                         for tree_item in grouped_item['tree_items']:
@@ -2453,17 +2445,13 @@ class PalletCalculationDialog(QDialog):
                                 d['box_weight'] = box_weight
                                 d['items_per_box'] = items_per_box
                                 d['max_layer'] = max_layer
-                                
-                                # 계산 결과도 일부 반영 (옵션)
                                 d['pallet_type'] = res.get('pallet_type')
-                                d['loading_pattern'] = summary # 요약 텍스트 저장
-                                d['boxes_per_pallet'] = 0 # 혼적 모드이므로 개별 계산 의미 없음 (0으로 처리하거나 적당히)
-                                
+                                d['loading_pattern'] = summary
                                 tree_item.setData(0, Qt.UserRole, d)
 
-            # [신규] 제품 마스터 업데이트 로직
-            if self.chk_update_master.isChecked():
-                self.update_product_master_specs()
+        # [신규] 제품 마스터 업데이트 로직
+        if self.chk_update_master.isChecked():
+            self.update_product_master_specs()
 
         self.accept()
 
