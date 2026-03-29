@@ -47,16 +47,30 @@ class PurchaseInvoiceDialog(QtWidgets.QDialog):
         self.date_issue.setCalendarPopup(True)
         self.date_issue.setDate(QtCore.QDate.currentDate())
         
+        self.edit_supply = QtWidgets.QSpinBox()
+        self.edit_supply.setRange(0, 2000000000)
+        self.edit_supply.setGroupSeparatorShown(True)
+        self.edit_supply.setSuffix(" 원")
+        self.edit_supply.valueChanged.connect(self._on_supply_changed)
+
+        self.edit_tax = QtWidgets.QSpinBox()
+        self.edit_tax.setRange(0, 2000000000)
+        self.edit_tax.setGroupSeparatorShown(True)
+        self.edit_tax.setSuffix(" 원")
+        self.edit_tax.valueChanged.connect(self._on_tax_or_total_changed)
+
         self.edit_amount = QtWidgets.QSpinBox()
         self.edit_amount.setRange(0, 2000000000)
-        self.edit_amount.setSingleStep(10000)
         self.edit_amount.setGroupSeparatorShown(True)
         self.edit_amount.setSuffix(" 원")
+        self.edit_amount.valueChanged.connect(self._on_tax_or_total_changed)
         
         self.edit_approval = QtWidgets.QLineEdit()
         self.edit_note = QtWidgets.QLineEdit()
         
         form_invoice.addRow("발행일:", self.date_issue)
+        form_invoice.addRow("공급가액:", self.edit_supply)
+        form_invoice.addRow("세액 (10%):", self.edit_tax)
         form_invoice.addRow("총 합계 금액:", self.edit_amount)
         form_invoice.addRow("승인번호:", self.edit_approval)
         form_invoice.addRow("비고:", self.edit_note)
@@ -115,6 +129,31 @@ class PurchaseInvoiceDialog(QtWidgets.QDialog):
         self.edit_ceo.setText(data.get('ceo_name', ''))
         self.edit_address.setText(data.get('address', ''))
 
+    def _on_supply_changed(self, value):
+        """공급가액 변경 시 세액(10%) 및 합계를 자동 계산합니다."""
+        self.edit_supply.blockSignals(True)
+        self.edit_tax.blockSignals(True)
+        self.edit_amount.blockSignals(True)
+        
+        tax = round(value * 0.1)
+        self.edit_tax.setValue(tax)
+        self.edit_amount.setValue(value + tax)
+        
+        self.edit_supply.blockSignals(False)
+        self.edit_tax.blockSignals(False)
+        self.edit_amount.blockSignals(False)
+
+    def _on_tax_or_total_changed(self, value):
+        """세액이나 합계 수동 조정 시 (1원 단위 단수 처리 등) 최종 합계만 갱신합니다."""
+        if self.sender() == self.edit_tax:
+            self.edit_amount.blockSignals(True)
+            self.edit_amount.setValue(self.edit_supply.value() + self.edit_tax.value())
+            self.edit_amount.blockSignals(False)
+        elif self.sender() == self.edit_amount:
+            self.edit_tax.blockSignals(True)
+            self.edit_tax.setValue(self.edit_amount.value() - self.edit_supply.value())
+            self.edit_tax.blockSignals(False)
+
     def _on_save(self):
         # 1. 공급처 확보/업데이트
         supplier_name = self.edit_supplier_search.text().strip()
@@ -148,6 +187,8 @@ class PurchaseInvoiceDialog(QtWidgets.QDialog):
             'issue_date': self.date_issue.date().toString("yyyy-MM-dd"),
             'supplier_id': supplier_id,
             'total_amount': self.edit_amount.value(),
+            'supply_amount': self.edit_supply.value(),
+            'tax_amount': self.edit_tax.value(),
             'approval_number': self.edit_approval.text().strip(),
             'note': self.edit_note.text().strip()
         }

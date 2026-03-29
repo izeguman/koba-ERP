@@ -170,10 +170,12 @@ class PurchasePaymentDialog(QtWidgets.QDialog):
         lbl_invoice.setStyleSheet("font-size: 14px; font-weight: bold; color: #28a745;")
         right_layout.addWidget(lbl_invoice)
         
-        self.invoice_table = QtWidgets.QTableWidget(0, 5)
-        self.invoice_table.setHorizontalHeaderLabels(["발행일", "공급자", "이 발주 매핑액", "총액", "비고"])
-        self.invoice_table.horizontalHeader().setSectionResizeMode(4, QtWidgets.QHeaderView.Stretch)
+        self.invoice_table = QtWidgets.QTableWidget(0, 6)
+        self.invoice_table.setHorizontalHeaderLabels(["발행일", "공급자", "공급가액", "세액", "총액", "비고"])
+        self.invoice_table.horizontalHeader().setSectionResizeMode(5, QtWidgets.QHeaderView.Stretch)
+        self.invoice_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.invoice_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.invoice_table.itemDoubleClicked.connect(self.edit_invoice)
         right_layout.addWidget(self.invoice_table)
         
         btn_add_invoice = QtWidgets.QPushButton("세금계산서 등록/연결")
@@ -241,23 +243,37 @@ class PurchasePaymentDialog(QtWidgets.QDialog):
             self.load_data()
 
     def load_invoices(self):
-        # TODO: Implement database fetch logic for invoices
-        # data = get_tax_invoices_for_purchase(self.purchase_id)
-        # For now, placeholder or basic implement if DB function ready
         try:
             data = get_tax_invoices_for_purchase(self.purchase_id)
             self.invoice_table.setRowCount(0)
             for row in data:
-                # id, issue, supplier, total, mapped, note
+                # row: {'id': 1, 'issue_date': '...', 'supplier_name': '...', 'total_amount': ..., 
+                #       'supply_amount': ..., 'tax_amount': ..., 'note': ...}
                 r = self.invoice_table.rowCount()
                 self.invoice_table.insertRow(r)
-                self.invoice_table.setItem(r, 0, QtWidgets.QTableWidgetItem(row[1]))
-                self.invoice_table.setItem(r, 1, QtWidgets.QTableWidgetItem(row[2]))
-                self.invoice_table.setItem(r, 2, QtWidgets.QTableWidgetItem(format_money(row[4]))) # Mapped
-                self.invoice_table.setItem(r, 3, QtWidgets.QTableWidgetItem(format_money(row[3]))) # Total
-                self.invoice_table.setItem(r, 4, QtWidgets.QTableWidgetItem(row[5]))
+                
+                item_date = QtWidgets.QTableWidgetItem(row.get('issue_date', ''))
+                item_date.setData(QtCore.Qt.UserRole, row.get('id')) # ID 저장
+                
+                self.invoice_table.setItem(r, 0, item_date)
+                self.invoice_table.setItem(r, 1, QtWidgets.QTableWidgetItem(row.get('supplier_name', '')))
+                self.invoice_table.setItem(r, 2, QtWidgets.QTableWidgetItem(format_money(row.get('supply_amount', 0))))
+                self.invoice_table.setItem(r, 3, QtWidgets.QTableWidgetItem(format_money(row.get('tax_amount', 0))))
+                self.invoice_table.setItem(r, 4, QtWidgets.QTableWidgetItem(format_money(row.get('total_amount', 0))))
+                self.invoice_table.setItem(r, 5, QtWidgets.QTableWidgetItem(row.get('note', '')))
         except Exception as e:
             print(f"Invoice load error: {e}")
+
+    def edit_invoice(self, item):
+        """세금계산서 항목 더블클릭 시 수정 다이얼로그를 엽니다."""
+        row = item.row()
+        invoice_id = self.invoice_table.item(row, 0).data(QtCore.Qt.UserRole)
+        if not invoice_id:
+            return
+            
+        dlg = TaxInvoiceItemDialog(purchase_id=self.purchase_id, invoice_id=invoice_id, parent=self)
+        if dlg.exec():
+            self.load_data()
 
     def open_invoice_dialog(self):
         # 새로운 품목별 입력 다이얼로그 사용
@@ -342,7 +358,7 @@ class SimpleInvoiceDialog(QtWidgets.QDialog):
             inv_id = add_tax_invoice(issue_date, supplier, total, note)
             
             # 2. 매핑 생성
-            link_tax_invoice_to_purchase(inv_id, self.purchase_id, mapped)
+            link_tax_invoice_to_purchase(inv_id, self.purchase_id)
             
             self.accept()
             

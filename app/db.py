@@ -44,6 +44,15 @@ DB_PATH = Path(DB_DIR) / DB_NAME
 
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
+def format_money(val: float | None) -> str:
+    """숫자를 통화 형식(3자리 콤마)으로 변환합니다."""
+    if val is None:
+        return ""
+    try:
+        return f"{val:,.0f}"
+    except Exception:
+        return str(val)
+
 
 
 SCHEMA_SQL = """
@@ -802,6 +811,23 @@ CREATE TABLE IF NOT EXISTS purchase_invoice_links (
     UNIQUE(tax_invoice_id, purchase_id)
 );
 
+/* 매입 세금계산서 상세 품목 */
+CREATE TABLE IF NOT EXISTS purchase_tax_invoice_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tax_invoice_id INTEGER NOT NULL,
+    item_name TEXT NOT NULL,
+    spec TEXT,
+    quantity INTEGER DEFAULT 1,
+    unit_price INTEGER DEFAULT 0,
+    supply_amount INTEGER DEFAULT 0,
+    tax_amount INTEGER DEFAULT 0,
+    purchase_id INTEGER,
+    purchase_no TEXT,
+    note TEXT,
+    FOREIGN KEY (tax_invoice_id) REFERENCES purchase_tax_invoices(id) ON DELETE CASCADE,
+    FOREIGN KEY (purchase_id) REFERENCES purchases(id) ON DELETE SET NULL
+);
+
 """
 
 def init_db():
@@ -942,7 +968,8 @@ def get_conn() -> sqlite3.Connection:
 
                 cursor.execute(f"ALTER TABLE product_repairs ADD COLUMN {col_name} {col_type};")
 
-
+        # --- 2. 세금계산서 및 지불 분리 (공급가액/세액) 패치 ---
+        _patch_db_for_tax_split(conn)
 
         conn.commit()
 
@@ -1287,6 +1314,47 @@ def get_conn() -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout = 5000;")
 
     return conn
+
+def _patch_db_for_tax_split(conn: sqlite3.Connection):
+    """
+    세금계산서 및 지불 내역 테이블에 공급가액과 세액 컬럼을 추가하고
+    기존 총액 데이터를 바탕으로 (총액/1.1) 값을 배분하여 초기화합니다.
+    """
+    cursor = conn.cursor()
+    
+    # 1. purchase_tax_invoices 테이블 패치
+    cursor.execute("PRAGMA table_info(purchase_tax_invoices);")
+    ti_cols = [info[1] for info in cursor.fetchall()]
+    
+    if "supply_amount" not in ti_cols:
+        print("Migrating purchase_tax_invoices: adding supply_amount and tax_amount...")
+        cursor.execute("ALTER TABLE purchase_tax_invoices ADD COLUMN supply_amount INTEGER DEFAULT 0;")
+        cursor.execute("ALTER TABLE purchase_tax_invoices ADD COLUMN tax_amount INTEGER DEFAULT 0;")
+        
+        # 기존 total_amount 기반 데이터 배분 (총액 / 1.1 = 공급가액)
+        cursor.execute("""
+            UPDATE purchase_tax_invoices 
+            SET supply_amount = ROUND(total_amount / 1.1),
+                tax_amount = total_amount - ROUND(total_amount / 1.1)
+            WHERE total_amount > 0 AND supply_amount = 0
+        """)
+
+    # 2. purchase_payments 테이블 패치
+    cursor.execute("PRAGMA table_info(purchase_payments);")
+    pay_cols = [info[1] for info in cursor.fetchall()]
+    
+    if "supply_amount" not in pay_cols:
+        print("Migrating purchase_payments: adding supply_amount and tax_amount...")
+        cursor.execute("ALTER TABLE purchase_payments ADD COLUMN supply_amount INTEGER DEFAULT 0;")
+        cursor.execute("ALTER TABLE purchase_payments ADD COLUMN tax_amount INTEGER DEFAULT 0;")
+        
+        # 기존 amount 기반 데이터 배분
+        cursor.execute("""
+            UPDATE purchase_payments 
+            SET supply_amount = ROUND(amount / 1.1),
+                tax_amount = amount - ROUND(amount / 1.1)
+            WHERE amount > 0 AND supply_amount = 0
+        """)
 
 
 
@@ -6829,25 +6897,59 @@ def add_or_update_supplier(data: dict) -> int:
 
 def add_purchase_tax_invoice(invoice_data: dict, purchase_ids: list[int] = None) -> int:
     """매입 세금계산서를 등록하고 관련 발주(PO)를 연결합니다."""
+    # supplier_id가 0이거나 None이면 이름으로 조회 시도
+    supplier_id = invoice_data.get('supplier_id')
+    supplier_name = invoice_data.get('supplier_name')
+    
+    if (not supplier_id or supplier_id == 0) and supplier_name:
+        res = query_one("SELECT id FROM suppliers WHERE name = ?", (supplier_name,))
+        if res:
+            supplier_id = res[0]
+            invoice_data['supplier_id'] = supplier_id
+        else:
+            try:
+                supplier_id = add_or_update_supplier({'name': supplier_name})
+                invoice_data['supplier_id'] = supplier_id
+            except:
+                pass
+
     conn = get_conn()
     try:
         cur = conn.cursor()
-        # 1. 세금계산서 삽입
-        cur.execute("""
-            INSERT INTO purchase_tax_invoices (issue_date, supplier_id, total_amount, approval_number, note)
-            VALUES (?, ?, ?, ?, ?)
-        """, (invoice_data['issue_date'], invoice_data['supplier_id'], invoice_data['total_amount'], 
-              invoice_data.get('approval_number'), invoice_data.get('note')))
-        invoice_id = cur.lastrowid
+        total = invoice_data.get('total_amount', 0)
+        supply = invoice_data.get('supply_amount', 0)
+        tax = invoice_data.get('tax_amount', 0)
+        if supply == 0 and total > 0:
+            supply = round(total / 1.1)
+            tax = total - supply
+        elif total == 0 and supply > 0:
+            tax = round(supply * 0.1)
+            total = supply + tax
 
-        # 2. 발주서 연결
-        if purchase_ids:
-            for pid in purchase_ids:
-                cur.execute("""
-                    INSERT INTO purchase_invoice_links (tax_invoice_id, purchase_id)
-                    VALUES (?, ?)
-                """, (invoice_id, pid))
-        
+        invoice_id = invoice_data.get('id')
+        if invoice_id:
+            cur.execute("""
+                UPDATE purchase_tax_invoices SET
+                    issue_date = ?, supplier_id = ?, total_amount = ?, 
+                    supply_amount = ?, tax_amount = ?,
+                    approval_number = ?, note = ?, updated_at = datetime('now','localtime')
+                WHERE id = ?
+            """, (invoice_data['issue_date'], invoice_data['supplier_id'], total, supply, tax,
+                  invoice_data.get('approval_number'), invoice_data.get('note'), invoice_id))
+            if purchase_ids is not None:
+                cur.execute("DELETE FROM purchase_invoice_links WHERE tax_invoice_id = ?", (invoice_id,))
+                for pid in purchase_ids:
+                    cur.execute("INSERT INTO purchase_invoice_links (tax_invoice_id, purchase_id) VALUES (?, ?)", (invoice_id, pid))
+        else:
+            cur.execute("""
+                INSERT INTO purchase_tax_invoices (issue_date, supplier_id, total_amount, supply_amount, tax_amount, approval_number, note)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (invoice_data['issue_date'], invoice_data['supplier_id'], total, supply, tax,
+                  invoice_data.get('approval_number'), invoice_data.get('note')))
+            invoice_id = cur.lastrowid
+            if purchase_ids:
+                for pid in purchase_ids:
+                    cur.execute("INSERT INTO purchase_invoice_links (tax_invoice_id, purchase_id) VALUES (?, ?)", (invoice_id, pid))
         conn.commit()
         return invoice_id
     except Exception as e:
@@ -6857,10 +6959,14 @@ def add_purchase_tax_invoice(invoice_data: dict, purchase_ids: list[int] = None)
     finally:
         conn.close()
 
+add_tax_invoice = add_purchase_tax_invoice
+
+
 def get_purchase_tax_invoices(supplier_id: int = None, purchase_id: int = None) -> list[dict]:
     """조건에 맞는 매입 세금계산서 목록을 조회합니다."""
     sql = """
         SELECT inv.id, inv.issue_date, inv.supplier_id, s.name, inv.total_amount, 
+               inv.supply_amount, inv.tax_amount,
                inv.approval_number, inv.status, inv.note,
                (SELECT GROUP_CONCAT(p.purchase_no, ', ') 
                 FROM purchase_invoice_links l 
@@ -6890,23 +6996,38 @@ def get_purchase_tax_invoices(supplier_id: int = None, purchase_id: int = None) 
     return [
         {
             'id': r[0], 'issue_date': r[1], 'supplier_name': r[3], 'total_amount': r[4],
-            'approval_number': r[5], 'status': r[6], 'note': r[7], 'linked_pos': r[8],
-            'paid_amount': r[9], 'balance': r[4] - r[9]
+            'supply_amount': r[5], 'tax_amount': r[6],
+            'approval_number': r[7], 'status': r[8], 'note': r[9], 'linked_pos': r[10],
+            'paid_amount': r[11], 'balance': r[4] - r[11]
         }
         for r in rows
     ]
+
+# Alias
+get_tax_invoices_for_purchase = lambda pid: get_purchase_tax_invoices(purchase_id=pid)
 
 def add_purchase_payment(payment_data: dict) -> bool:
     """대금 지불 내역을 등록하고 세금계산서의 지불 상태를 자동 업데이트합니다."""
     conn = get_conn()
     try:
         cur = conn.cursor()
+        # 금액 보정
+        total = payment_data.get('amount', 0)
+        supply = payment_data.get('supply_amount', 0)
+        tax = payment_data.get('tax_amount', 0)
+        if total > 0 and supply == 0:
+            supply = round(total / 1.1)
+            tax = total - supply
+        elif supply > 0 and total == 0:
+            tax = round(supply * 0.1)
+            total = supply + tax
+
         # 1. 지불 내역 삽입
         cur.execute("""
-            INSERT INTO purchase_payments (tax_invoice_id, payment_date, amount, payment_method, note)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO purchase_payments (tax_invoice_id, payment_date, amount, supply_amount, tax_amount, payment_method, note)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (payment_data['tax_invoice_id'], payment_data['payment_date'], 
-              payment_data['amount'], payment_data['payment_method'], payment_data.get('note')))
+              total, supply, tax, payment_data['payment_method'], payment_data.get('note')))
         
         # 2. 상태 업데이트
         _update_purchase_invoice_status(payment_data['tax_invoice_id'], cur)
@@ -6919,6 +7040,11 @@ def add_purchase_payment(payment_data: dict) -> bool:
         return False
     finally:
         conn.close()
+
+# Alias 
+add_payment = lambda pid, d, amt, meth, note, tax_invoice_id=None: add_purchase_payment({
+    'tax_invoice_id': tax_invoice_id, 'payment_date': d, 'amount': amt, 'payment_method': meth, 'note': note
+})
 
 def _update_purchase_invoice_status(invoice_id: int, cursor):
     """지불 금액을 합산하여 세금계산서의 상태(미지불/부분지불/완료)를 자동 갱신합니다."""
@@ -6987,13 +7113,228 @@ def get_purchase_payment_status_for_po(purchase_id: int) -> dict:
         'status': status
     }
 
-def get_available_purchases() -> list[tuple]:
+def get_available_purchases_for_tax() -> list[tuple]:
     """매입 세금계산서와 연결 가능한 발주(PO) 목록을 반환합니다."""
     sql = """
-        SELECT id, purchase_no, purchase_dt, status
+        SELECT id, purchase_no, purchase_dt, status, actual_amount
         FROM purchases
         WHERE status != '삭제'
 /*        AND id NOT IN (SELECT purchase_id FROM purchase_invoice_links)  -- 이미 연결된 것은 제외할지 여부 (복수 연결 허용 시 주석) */
         ORDER BY purchase_dt DESC
     """
     return query_all(sql)
+
+def delete_purchase_tax_invoice(invoice_id: int) -> bool:
+    """세금계산서 및 관련 연결 정보를 삭제합니다."""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM purchase_tax_invoices WHERE id = ?", (invoice_id,))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"delete_purchase_tax_invoice error: {e}")
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+def get_payments_for_purchase(purchase_id: int) -> list[dict]:
+    """특정 발주와 관련된 모든 지불 내역을 조회합니다."""
+    sql = """
+        SELECT p.id, p.tax_invoice_id, p.payment_date, p.amount, p.supply_amount, p.tax_amount, p.payment_method, p.note
+        FROM purchase_payments p
+        JOIN purchase_invoice_links l ON p.tax_invoice_id = l.tax_invoice_id
+        WHERE l.purchase_id = ?
+        ORDER BY p.payment_date DESC
+    """
+    rows = query_all(sql, (purchase_id,))
+    return [
+        {
+            'id': r[0], 'tax_invoice_id': r[1], 'payment_date': r[2], 
+            'amount': r[3], 'supply_amount': r[4], 'tax_amount': r[5],
+            'payment_method': r[6], 'note': r[7]
+        }
+        for r in rows
+    ]
+
+def delete_payment(payment_id: int) -> bool:
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        # 원본 invoice_id 찾기
+        cur.execute("SELECT tax_invoice_id FROM purchase_payments WHERE id = ?", (payment_id,))
+        res = cur.fetchone()
+        if res:
+            invoice_id = res[0]
+            cur.execute("DELETE FROM purchase_payments WHERE id = ?", (payment_id,))
+            _update_purchase_invoice_status(invoice_id, cur)
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"delete_payment error: {e}")
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+def update_payment(payment_id, amount, method, note):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        # Find invoice_id
+        cur.execute("SELECT tax_invoice_id FROM purchase_payments WHERE id = ?", (payment_id,))
+        res = cur.fetchone()
+        if res:
+            invoice_id = res[0]
+            cur.execute("""
+                UPDATE purchase_payments SET 
+                    amount = ?, 
+                    supply_amount = ROUND(? / 1.1),
+                    tax_amount = ? - ROUND(? / 1.1),
+                    payment_method = ?, note = ?, updated_at = datetime('now','localtime')
+                WHERE id = ?
+            """, (amount, amount, amount, amount, method, note, payment_id))
+            _update_purchase_invoice_status(invoice_id, cur)
+        conn.commit()
+    finally:
+        conn.close()
+
+# Missing functions required by UI
+def link_tax_invoice_to_purchase(invoice_id, purchase_id):
+    execute("INSERT OR IGNORE INTO purchase_invoice_links (tax_invoice_id, purchase_id) VALUES (?, ?)", (invoice_id, purchase_id))
+
+def get_purchase_payment_summary(purchase_id):
+    return get_purchase_payment_status_for_po(purchase_id)
+
+def get_tax_invoice_items(invoice_id):
+    """세금계산서의 상세 품목 리스트를 반환합니다."""
+    sql = """
+        SELECT id, item_name, spec, quantity, unit_price, supply_amount, tax_amount, purchase_id, purchase_no, note
+        FROM purchase_tax_invoice_items
+        WHERE tax_invoice_id = ?
+        ORDER BY id
+    """
+    rows = query_all(sql, (invoice_id,))
+    return [
+        {
+            'id': r[0], 'item_name': r[1], 'spec': r[2], 'quantity': r[3],
+            'unit_price': r[4], 'supply_amount': r[5], 'tax_amount': r[6],
+            'purchase_id': r[7], 'purchase_no': r[8], 'note': r[9]
+        }
+        for r in rows
+    ]
+
+def add_tax_invoice_item(invoice_id, item_name, spec, quantity, unit_price, purchase_no=None, purchase_id=None, note=None):
+    """세금계산서에 품목을 추가하고 헤더의 총액을 업데이트합니다."""
+    supply = quantity * unit_price
+    tax = round(supply * 0.1)
+    
+    execute("""
+        INSERT INTO purchase_tax_invoice_items (
+            tax_invoice_id, item_name, spec, quantity, unit_price, 
+            supply_amount, tax_amount, purchase_id, purchase_no, note
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (invoice_id, item_name, spec, quantity, unit_price, supply, tax, purchase_id, purchase_no, note))
+    
+    update_tax_invoice_total(invoice_id)
+    
+    if purchase_id:
+        link_tax_invoice_to_purchase(invoice_id, purchase_id)
+
+def update_purchase_tax_invoice_header(invoice_id, data):
+    """세금계산서 헤더 정보(날짜, 공급자 등)를 업데이트합니다."""
+    sql = """
+        UPDATE purchase_tax_invoices 
+        SET issue_date = ?, supplier_id = ?, approval_number = ?, note = ?, updated_at = datetime('now','localtime')
+        WHERE id = ?
+    """
+    execute(sql, (data['issue_date'], data['supplier_id'], data.get('approval_number'), data.get('note', ""), invoice_id))
+
+def clear_tax_invoice_items(invoice_id):
+    """세금계산서의 모든 품목 및 발주 연결 정보를 삭제합니다 (수정 전 초기화용)."""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM purchase_tax_invoice_items WHERE tax_invoice_id = ?", (invoice_id,))
+        cur.execute("DELETE FROM purchase_invoice_links WHERE tax_invoice_id = ?", (invoice_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+def delete_tax_invoice_item(item_id):
+    """현재 스키마에선 품목 ID가 없으므로 무시하거나 인보이스 전체 금액 초기화 시 사용"""
+    pass
+
+def update_tax_invoice_total(invoice_id):
+    """세금계산서의 품목 합계를 계산하여 헤더 정보를 갱신하고 결제 상태를 업데이트합니다."""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        # 품목 합계 계산
+        cur.execute("SELECT SUM(supply_amount), SUM(tax_amount) FROM purchase_tax_invoice_items WHERE tax_invoice_id = ?", (invoice_id,))
+        res = cur.fetchone()
+        supply = res[0] or 0
+        tax = res[1] or 0
+        total = supply + tax
+        
+        # 헤더 업데이트
+        cur.execute("""
+            UPDATE purchase_tax_invoices 
+            SET supply_amount = ?, tax_amount = ?, total_amount = ?, updated_at = datetime('now','localtime')
+            WHERE id = ?
+        """, (supply, tax, total, invoice_id))
+        
+        # 결제 상태 업데이트 (기존 로직 재사용)
+        _update_purchase_invoice_status(invoice_id, cur)
+        
+        conn.commit()
+    finally:
+        conn.close()
+
+def get_available_purchases_for_invoice():
+    """인보이스 연결이 가능한 발주 목록 (get_available_purchases_for_tax와 동일)"""
+    return get_available_purchases_for_tax()
+
+def get_tax_invoice_detail(invoice_id):
+    """세금계산서 상세 정보를 반환합니다. (공급자 명, 금액 일체 포함)"""
+    sql = """
+        SELECT inv.id, inv.issue_date, inv.supplier_id, s.name, inv.total_amount, 
+               inv.supply_amount, inv.tax_amount, inv.approval_number, inv.note
+        FROM purchase_tax_invoices inv
+        JOIN suppliers s ON inv.supplier_id = s.id
+        WHERE inv.id = ?
+    """
+    r = query_one(sql, (invoice_id,))
+    if r:
+        return {
+            'id': r[0], 
+            'issue_date': r[1], 
+            'supplier_id': r[2], 
+            'supplier_name': r[3],
+            'total_amount': r[4], 
+            'supply_amount': r[5], 
+            'tax_amount': r[6],
+            'approval_number': r[7], 
+            'note': r[8],
+            'items': get_tax_invoice_items(r[0])
+        }
+    return None
+
+def get_all_tax_invoices(start_date=None, end_date=None):
+    """기간별 모든 세금계산서를 조회합니다."""
+    sql = """
+        SELECT inv.id, inv.issue_date, s.name, inv.total_amount, inv.note, 
+               (SELECT COUNT(*) FROM purchase_tax_invoice_items WHERE tax_invoice_id = inv.id) as item_count
+        FROM purchase_tax_invoices inv
+        JOIN suppliers s ON inv.supplier_id = s.id
+    """
+    params = []
+    if start_date and end_date:
+        sql += " WHERE inv.issue_date BETWEEN ? AND ?"
+        params = [start_date, end_date]
+    sql += " ORDER BY inv.issue_date DESC"
+    return query_all(sql, tuple(params))
+
+def delete_tax_invoice(invoice_id):
+    return delete_purchase_tax_invoice(invoice_id)

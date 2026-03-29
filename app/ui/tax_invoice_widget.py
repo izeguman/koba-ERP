@@ -15,12 +15,12 @@ from .tax_invoice_item_dialog import TaxInvoiceItemDialog
 class TaxInvoiceWidget(QtWidgets.QWidget):
     """세금계산서 관리 위젯"""
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, settings=None):
         super().__init__(parent)
-        self.settings = QtCore.QSettings("KOBATECH", "ProductManager")
+        self.settings = settings or QtCore.QSettings("KOBATECH", "ProductManager")
         self.setup_ui()
         self.restore_column_widths()
-        self.load_invoices()
+        self.load_data()
         
     def closeEvent(self, event):
         self.save_column_widths()
@@ -66,7 +66,7 @@ class TaxInvoiceWidget(QtWidgets.QWidget):
         self.end_date_edit.setDisplayFormat("yyyy-MM-dd")
         
         btn_search = QtWidgets.QPushButton("검색")
-        btn_search.clicked.connect(self.load_invoices)
+        btn_search.clicked.connect(self.load_data)
         
         filter_layout.addWidget(self.start_date_edit)
         filter_layout.addWidget(QtWidgets.QLabel("~"))
@@ -95,7 +95,7 @@ class TaxInvoiceWidget(QtWidgets.QWidget):
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.show_context_menu)
-        self.table.doubleClicked.connect(self.view_invoice_details)
+        self.table.doubleClicked.connect(self.edit_invoice)
         
         layout.addWidget(self.table)
         
@@ -122,7 +122,7 @@ class TaxInvoiceWidget(QtWidgets.QWidget):
         
         layout.addLayout(btn_layout)
         
-    def load_invoices(self):
+    def load_data(self):
         """세금계산서 목록 로드"""
         start_date = self.start_date_edit.date().toString("yyyy-MM-dd")
         end_date = self.end_date_edit.date().toString("yyyy-MM-dd")
@@ -170,7 +170,7 @@ class TaxInvoiceWidget(QtWidgets.QWidget):
         """세금계산서 등록"""
         dialog = TaxInvoiceItemDialog(purchase_id=None, parent=self)
         if dialog.exec():
-            self.load_invoices()
+            self.load_data()
     
     def edit_invoice(self):
         """세금계산서 수정"""
@@ -182,7 +182,7 @@ class TaxInvoiceWidget(QtWidgets.QWidget):
         invoice_id = self.table.item(current_row, 5).data(Qt.UserRole)
         dialog = TaxInvoiceItemDialog(purchase_id=None, invoice_id=invoice_id, parent=self)
         if dialog.exec():
-            self.load_invoices()
+            self.load_data()
             
     def view_invoice_details(self):
         """세금계산서 상세보기"""
@@ -220,7 +220,7 @@ class TaxInvoiceWidget(QtWidgets.QWidget):
         if reply == QtWidgets.QMessageBox.Yes:
             try:
                 delete_tax_invoice(invoice_id)
-                self.load_invoices()
+                self.load_data()
                 QtWidgets.QMessageBox.information(self, "완료", "세금계산서가 삭제되었습니다.")
             except Exception as e:
                 QtWidgets.QMessageBox.critical(self, "오류", f"삭제 실패:\n{str(e)}")
@@ -269,15 +269,15 @@ class TaxInvoiceDetailDialog(QtWidgets.QDialog):
         self.items_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         
         for row, item in enumerate(self.detail['items']):
-            # id, item_name, spec, quantity, unit_price, supply_amount, tax_amount, note, purchase_id, purchase_no
-            self.items_table.setItem(row, 0, QtWidgets.QTableWidgetItem(item[1] or ""))
-            self.items_table.setItem(row, 1, QtWidgets.QTableWidgetItem(item[2] or ""))
-            self.items_table.setItem(row, 2, QtWidgets.QTableWidgetItem(str(item[3])))
-            self.items_table.setItem(row, 3, QtWidgets.QTableWidgetItem(format_money(item[4])))
-            self.items_table.setItem(row, 4, QtWidgets.QTableWidgetItem(format_money(item[5])))
-            self.items_table.setItem(row, 5, QtWidgets.QTableWidgetItem(format_money(item[6])))
-            self.items_table.setItem(row, 6, QtWidgets.QTableWidgetItem(item[9] or "-"))
-            self.items_table.setItem(row, 7, QtWidgets.QTableWidgetItem(item[7] or ""))
+            # id, item_name, spec, quantity, unit_price, supply_amount, tax_amount, purchase_id, purchase_no
+            self.items_table.setItem(row, 0, QtWidgets.QTableWidgetItem(item['item_name'] or ""))
+            self.items_table.setItem(row, 1, QtWidgets.QTableWidgetItem(item.get('spec', "") or ""))
+            self.items_table.setItem(row, 2, QtWidgets.QTableWidgetItem(str(item.get('quantity', 1))))
+            self.items_table.setItem(row, 3, QtWidgets.QTableWidgetItem(format_money(item.get('unit_price', 0))))
+            self.items_table.setItem(row, 4, QtWidgets.QTableWidgetItem(format_money(item['supply_amount'])))
+            self.items_table.setItem(row, 5, QtWidgets.QTableWidgetItem(format_money(item['tax_amount'])))
+            self.items_table.setItem(row, 6, QtWidgets.QTableWidgetItem(item.get('purchase_no', "-") or "-"))
+            self.items_table.setItem(row, 7, QtWidgets.QTableWidgetItem(item.get('note', "") or ""))
         
         layout.addWidget(self.items_table)
         

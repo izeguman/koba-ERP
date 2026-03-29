@@ -26,6 +26,7 @@ from .utils import parse_due_text, apply_table_resize_policy, resource_path, get
 from .filter_settings_dialog import FilterSettingsDialog
 from .analysis_widget import AnalysisWidget
 from .profit_widget import ProfitWidget
+from .tax_invoice_widget import TaxInvoiceWidget
 from .outlook_sync import execute_outlook_operation_sync
 from .document_generator import get_next_oa_serial, generate_order_acknowledgement
 
@@ -137,6 +138,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # ✅ [추가] 수익 분석 탭
         self.profit_widget = ProfitWidget(settings=self.settings)
         self.main_tabs.addTab(self.profit_widget, "수익 분석")
+
+        # ✅ [추가] 세금계산서 관리 탭
+        self.tax_invoice_widget = TaxInvoiceWidget(settings=self.settings)
+        self.main_tabs.addTab(self.tax_invoice_widget, "세금계산서 관리")
 
         # 🆕 탭 전환 시 자동 새로고침 연결
         self.main_tabs.currentChanged.connect(self.on_tab_changed)
@@ -643,6 +648,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.repair_widget.load_repair_list()
 
         elif tab_name == "리콜 관리":
+            if hasattr(self, 'recall_widget'):
+                self.recall_widget.load_recall_list()
+
+        elif tab_name == "세금계산서 관리":
+            if hasattr(self, 'tax_invoice_widget'):
+                self.tax_invoice_widget.load_data()
             if hasattr(self, 'recall_widget'):
                 self.recall_widget.load_recall_list()
 
