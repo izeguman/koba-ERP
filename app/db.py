@@ -752,6 +752,56 @@ CREATE TABLE IF NOT EXISTS repair_shipment_links (
 CREATE INDEX IF NOT EXISTS idx_repair_shipment_links_shipment ON repair_shipment_links(repair_shipment_id);
 CREATE INDEX IF NOT EXISTS idx_repair_shipment_links_repair ON repair_shipment_links(repair_id);
 
+/* 공급처 정보 */
+CREATE TABLE IF NOT EXISTS suppliers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    biz_no TEXT,              -- 사업자번호
+    name TEXT UNIQUE NOT NULL, -- 상호
+    ceo_name TEXT,            -- 대표자명
+    contact TEXT,             -- 연락처
+    address TEXT,             -- 주소
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
+/* 매입 세금계산서 */
+CREATE TABLE IF NOT EXISTS purchase_tax_invoices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_date TEXT NOT NULL,       -- 발행일
+    supplier_id INTEGER NOT NULL,   -- 공급처 FK
+    total_amount INTEGER DEFAULT 0, -- 총 공급가액+세액 (원단위)
+    approval_number TEXT UNIQUE,    -- 국세청 승인번호
+    status TEXT DEFAULT '미지불',   -- 미지불, 부분지불, 지불완료
+    note TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime')),
+    FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE RESTRICT
+);
+
+/* 지불 내역 (매입 세금계산서 기반) */
+CREATE TABLE IF NOT EXISTS purchase_payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tax_invoice_id INTEGER NOT NULL,  -- 대상 세금계산서 FK
+    payment_date TEXT NOT NULL,       -- 지불일
+    amount INTEGER NOT NULL,          -- 지불금액
+    payment_method TEXT NOT NULL,     -- 현금, 수표, 어음, 외상
+    note TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime')),
+    FOREIGN KEY (tax_invoice_id) REFERENCES purchase_tax_invoices(id) ON DELETE CASCADE
+);
+
+/* 매입 세금계산서 - 발주(PO) 연결 (N:M) */
+CREATE TABLE IF NOT EXISTS purchase_invoice_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tax_invoice_id INTEGER NOT NULL,
+    purchase_id INTEGER NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    FOREIGN KEY (tax_invoice_id) REFERENCES purchase_tax_invoices(id) ON DELETE CASCADE,
+    FOREIGN KEY (purchase_id) REFERENCES purchases(id) ON DELETE CASCADE,
+    UNIQUE(tax_invoice_id, purchase_id)
+);
+
 """
 
 def init_db():
@@ -6726,3 +6776,224 @@ def get_purchase_report_data(purchase_id: int) -> dict:
             'total_linked_order_qty': total_linked_order_qty,
         }
     }
+
+
+# ===== 매입 관리 (Suppliers, Tax Invoices, Payments) =====
+
+def get_all_suppliers() -> list[dict]:
+    """모든 공급처 정보를 반환합니다."""
+    sql = "SELECT id, biz_no, name, ceo_name, contact, address FROM suppliers ORDER BY name ASC"
+    rows = query_all(sql)
+    return [
+        {'id': row[0], 'biz_no': row[1], 'name': row[2], 'ceo_name': row[3], 'contact': row[4], 'address': row[5]} 
+        for row in rows
+    ]
+
+def search_suppliers(term: str) -> list[dict]:
+    """상호, 사업자번호, 대표자명으로 공급처를 검색합니다."""
+    sql = """
+        SELECT id, biz_no, name, ceo_name, contact, address 
+        FROM suppliers 
+        WHERE name LIKE ? OR biz_no LIKE ? OR ceo_name LIKE ?
+        ORDER BY name ASC
+    """
+    pattern = f"%{term}%"
+    rows = query_all(sql, (pattern, pattern, pattern))
+    return [
+        {'id': row[0], 'biz_no': row[1], 'name': row[2], 'ceo_name': row[3], 'contact': row[4], 'address': row[5]} 
+        for row in rows
+    ]
+
+def add_or_update_supplier(data: dict) -> int:
+    """공급처 정보를 추가하거나 업데이트합니다."""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO suppliers (biz_no, name, ceo_name, contact, address, updated_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now','localtime'))
+            ON CONFLICT(name) DO UPDATE SET
+                biz_no = excluded.biz_no,
+                ceo_name = excluded.ceo_name,
+                contact = excluded.contact,
+                address = excluded.address,
+                updated_at = datetime('now','localtime')
+        """, (data.get('biz_no'), data['name'], data.get('ceo_name'), data.get('contact'), data.get('address')))
+        conn.commit()
+        return cur.lastrowid or query_one("SELECT id FROM suppliers WHERE name=?", (data['name'],))[0]
+    except Exception as e:
+        print(f"add_or_update_supplier error: {e}")
+        return -1
+    finally:
+        conn.close()
+
+def add_purchase_tax_invoice(invoice_data: dict, purchase_ids: list[int] = None) -> int:
+    """매입 세금계산서를 등록하고 관련 발주(PO)를 연결합니다."""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        # 1. 세금계산서 삽입
+        cur.execute("""
+            INSERT INTO purchase_tax_invoices (issue_date, supplier_id, total_amount, approval_number, note)
+            VALUES (?, ?, ?, ?, ?)
+        """, (invoice_data['issue_date'], invoice_data['supplier_id'], invoice_data['total_amount'], 
+              invoice_data.get('approval_number'), invoice_data.get('note')))
+        invoice_id = cur.lastrowid
+
+        # 2. 발주서 연결
+        if purchase_ids:
+            for pid in purchase_ids:
+                cur.execute("""
+                    INSERT INTO purchase_invoice_links (tax_invoice_id, purchase_id)
+                    VALUES (?, ?)
+                """, (invoice_id, pid))
+        
+        conn.commit()
+        return invoice_id
+    except Exception as e:
+        print(f"add_purchase_tax_invoice error: {e}")
+        conn.rollback()
+        return -1
+    finally:
+        conn.close()
+
+def get_purchase_tax_invoices(supplier_id: int = None, purchase_id: int = None) -> list[dict]:
+    """조건에 맞는 매입 세금계산서 목록을 조회합니다."""
+    sql = """
+        SELECT inv.id, inv.issue_date, inv.supplier_id, s.name, inv.total_amount, 
+               inv.approval_number, inv.status, inv.note,
+               (SELECT GROUP_CONCAT(p.purchase_no, ', ') 
+                FROM purchase_invoice_links l 
+                JOIN purchases p ON l.purchase_id = p.id 
+                WHERE l.tax_invoice_id = inv.id) as linked_pos,
+               (SELECT COALESCE(SUM(amount), 0) FROM purchase_payments WHERE tax_invoice_id = inv.id) as paid_amount
+        FROM purchase_tax_invoices inv
+        JOIN suppliers s ON inv.supplier_id = s.id
+    """
+    params = []
+    where_clauses = []
+    
+    if supplier_id:
+        where_clauses.append("inv.supplier_id = ?")
+        params.append(supplier_id)
+    
+    if purchase_id:
+        where_clauses.append("inv.id IN (SELECT tax_invoice_id FROM purchase_invoice_links WHERE purchase_id = ?)")
+        params.append(purchase_id)
+        
+    if where_clauses:
+        sql += " WHERE " + " AND ".join(where_clauses)
+    
+    sql += " ORDER BY inv.issue_date DESC"
+    
+    rows = query_all(sql, tuple(params))
+    return [
+        {
+            'id': r[0], 'issue_date': r[1], 'supplier_name': r[3], 'total_amount': r[4],
+            'approval_number': r[5], 'status': r[6], 'note': r[7], 'linked_pos': r[8],
+            'paid_amount': r[9], 'balance': r[4] - r[9]
+        }
+        for r in rows
+    ]
+
+def add_purchase_payment(payment_data: dict) -> bool:
+    """대금 지불 내역을 등록하고 세금계산서의 지불 상태를 자동 업데이트합니다."""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        # 1. 지불 내역 삽입
+        cur.execute("""
+            INSERT INTO purchase_payments (tax_invoice_id, payment_date, amount, payment_method, note)
+            VALUES (?, ?, ?, ?, ?)
+        """, (payment_data['tax_invoice_id'], payment_data['payment_date'], 
+              payment_data['amount'], payment_data['payment_method'], payment_data.get('note')))
+        
+        # 2. 상태 업데이트
+        _update_purchase_invoice_status(payment_data['tax_invoice_id'], cur)
+        
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"add_purchase_payment error: {e}")
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+def _update_purchase_invoice_status(invoice_id: int, cursor):
+    """지불 금액을 합산하여 세금계산서의 상태(미지불/부분지불/완료)를 자동 갱신합니다."""
+    # 총액 조회
+    cursor.execute("SELECT total_amount FROM purchase_tax_invoices WHERE id = ?", (invoice_id,))
+    total = cursor.fetchone()[0]
+    
+    # 지불 합계 조회
+    cursor.execute("SELECT SUM(amount) FROM purchase_payments WHERE tax_invoice_id = ?", (invoice_id,))
+    paid = cursor.fetchone()[0] or 0
+    
+    if paid >= total:
+        status = '지불완료'
+    elif paid > 0:
+        status = '부분지불'
+    else:
+        status = '미지불'
+        
+    cursor.execute("UPDATE purchase_tax_invoices SET status = ?, updated_at = datetime('now','localtime') WHERE id = ?", 
+                   (status, invoice_id))
+
+def get_purchase_payment_trend(year: int) -> list[dict]:
+    """연도별 월간 매입 지불 현황을 집계합니다."""
+    sql = """
+        SELECT strftime('%m', payment_date) as month, SUM(amount) as total
+        FROM purchase_payments
+        WHERE strftime('%Y', payment_date) = ?
+        GROUP BY month
+        ORDER BY month ASC
+    """
+    rows = query_all(sql, (str(year),))
+    return [{'month': r[0], 'total': r[1]} for r in rows]
+
+def get_purchase_payment_status_for_po(purchase_id: int) -> dict:
+    """특정 발주(PO) 건에 연결된 세금계산서 및 지불 현황 요약을 반환합니다."""
+    sql = """
+        SELECT 
+            COUNT(inv.id) as invoice_count,
+            SUM(inv.total_amount) as total_invoiced,
+            (SELECT SUM(pay.amount) 
+             FROM purchase_payments pay 
+             JOIN purchase_invoice_links l ON pay.tax_invoice_id = l.tax_invoice_id 
+             WHERE l.purchase_id = ?) as total_paid
+        FROM purchase_invoice_links link
+        JOIN purchase_tax_invoices inv ON link.tax_invoice_id = inv.id
+        WHERE link.purchase_id = ?
+    """
+    row = query_one(sql, (purchase_id, purchase_id))
+    if not row or row[0] == 0:
+        return {'invoice_count': 0, 'total_invoiced': 0, 'total_paid': 0, 'status': '미발행'}
+    
+    total_invoiced = row[1] or 0
+    total_paid = row[2] or 0
+    
+    if total_paid >= total_invoiced:
+        status = '지불완료'
+    elif total_paid > 0:
+        status = '부분지불'
+    else:
+        status = '미지불'
+        
+    return {
+        'invoice_count': row[0],
+        'total_invoiced': total_invoiced,
+        'total_paid': total_paid,
+        'status': status
+    }
+
+def get_available_purchases() -> list[tuple]:
+    """매입 세금계산서와 연결 가능한 발주(PO) 목록을 반환합니다."""
+    sql = """
+        SELECT id, purchase_no, purchase_dt, status
+        FROM purchases
+        WHERE status != '삭제'
+/*        AND id NOT IN (SELECT purchase_id FROM purchase_invoice_links)  -- 이미 연결된 것은 제외할지 여부 (복수 연결 허용 시 주석) */
+        ORDER BY purchase_dt DESC
+    """
+    return query_all(sql)

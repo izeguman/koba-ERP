@@ -2,6 +2,7 @@
 from PySide6 import QtWidgets, QtCore
 from PySide6.QtWidgets import QHeaderView
 from PySide6.QtCore import Qt, QSignalBlocker, QSettings
+from PySide6.QtGui import QColor, QBrush
 from datetime import datetime
 from ..db import (get_conn,
                   get_linked_orders, get_orders_for_purchase_display,
@@ -15,6 +16,9 @@ from ..db import is_purchase_completed, calculate_fifo_allocation_margins
 from .report_dialogs import PurchaseReportDialog
 from .document_generator import get_next_po_serial, generate_purchase_order
 from .utils import resource_path
+from .purchase_invoice_dialog import PurchaseInvoiceDialog
+from .payment_entry_dialog import PaymentEntryDialog
+from ..db import get_purchase_payment_status_for_po, get_purchase_tax_invoices
 
 
 def format_money(val: float | None) -> str:
@@ -129,11 +133,11 @@ class PurchaseWidget(QtWidgets.QWidget):
         title_layout.addWidget(self.btn_refresh_purchase)
         title_layout.addWidget(self.btn_show_all)
 
-        # ✅ 컬럼 개수 7개 -> 8개로 변경
-        self.table = QtWidgets.QTableWidget(0, 8)
-        # ✅ 헤더에 '총수량' 추가
+        # ✅ 컬럼 개수 8개 -> 9개로 변경
+        self.table = QtWidgets.QTableWidget(0, 9)
+        # ✅ 헤더에 '지불상태' 추가
         self.table.setHorizontalHeaderLabels(
-            ["발주일", "발주번호", "총수량", "품목수", "발주내용", "발주금액(원)", "연결주문", "완료여부"]
+            ["발주일", "발주번호", "총수량", "품목수", "발주내용", "발주금액(원)", "연결주문", "지불상태", "완료여부"]
         )
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
@@ -159,7 +163,8 @@ class PurchaseWidget(QtWidgets.QWidget):
         self.table.setColumnWidth(4, 600)  # 발주내용
         self.table.setColumnWidth(5, 120)  # 발주금액(원)
         self.table.setColumnWidth(6, 350)  # 연결주문
-        self.table.setColumnWidth(7, 80)  # 완료여부
+        self.table.setColumnWidth(7, 100)  # 지불상태 (새로 추가)
+        self.table.setColumnWidth(8, 80)   # 완료여부
 
         if self.settings:
             self.restore_column_widths()
@@ -235,10 +240,13 @@ class PurchaseWidget(QtWidgets.QWidget):
         report_action = menu.addAction("상세 리포트 보기 (잔량 확인)")
         report_action.triggered.connect(self.show_purchase_report)
 
-        # [NEW] 발주서 작성
-        po_action = menu.addAction("발주서 작성")
-        po_action.triggered.connect(self.create_po_document)
+        # [NEW] 매입 관리
+        invoice_action = menu.addAction("매입 세금계산서 등록")
+        invoice_action.triggered.connect(lambda: self.register_purchase_invoice(position))
         
+        payment_info_action = menu.addAction("지불 정보 확인/등록")
+        payment_info_action.triggered.connect(lambda: self.view_payment_info(position))
+
         menu.addSeparator()
 
         edit_action = menu.addAction("수정")
@@ -248,6 +256,31 @@ class PurchaseWidget(QtWidgets.QWidget):
         delete_action.triggered.connect(self.delete_purchase)
 
         menu.exec_(self.table.mapToGlobal(position))
+
+    def register_purchase_invoice(self, pos=None):
+        """매입 세금계산서 등록 팝업 실행"""
+        dlg = PurchaseInvoiceDialog(self)
+        if dlg.exec_():
+            self.load_purchase_list()
+
+    def view_payment_info(self, pos=None):
+        """해당 PO와 연결된 세금계산서 조회 및 지불 등록"""
+        row = self.table.currentRow()
+        if row < 0: return
+        
+        purchase_id = self.table.item(row, 1).data(QtCore.Qt.UserRole)
+        # 해당 PO와 연결된 세금계산서 목록 조회
+        invoices = get_purchase_tax_invoices(purchase_id=purchase_id)
+        
+        if not invoices:
+            QtWidgets.QMessageBox.information(self, "알림", "연결된 세금계산서가 없습니다.\n먼저 '매입 세금계산서 등록'을 해주세요.")
+            return
+
+        # 만약 여러 장의 세금계산서가 있다면 가장 최근 등록된 것을 기준으로 지불 팝업 실행
+        inv_data = invoices[0] 
+        dlg = PaymentEntryDialog(inv_data, self)
+        if dlg.exec_():
+            self.load_purchase_list()
 
     def update_completed_status(self, purchase_id: int, state: int):
         """✅ 완료여부 상태 업데이트"""
@@ -429,7 +462,21 @@ class PurchaseWidget(QtWidgets.QWidget):
                 item_6.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)  # ✅ 왼쪽 정렬
                 self.table.setItem(r, 6, item_6)
 
-                # Col 7: 완료여부 (Checkbox + Label)
+                # ✅ Col 7: 지불상태 (NEW)
+                pay_status = get_purchase_payment_status_for_po(purchase_id)
+                status_text = f"{pay_status['status']}"
+                if pay_status['invoice_count'] > 0:
+                    status_text += f" ({format_money(pay_status['total_paid'])}원)"
+                
+                item_7 = QtWidgets.QTableWidgetItem(status_text)
+                item_7.setTextAlignment(Qt.AlignCenter)
+                if pay_status['status'] == '지불완료':
+                    item_7.setForeground(QColor("#2E7D32")) # Dark Green
+                elif pay_status['status'] == '부분지불':
+                    item_7.setForeground(QColor("#EF6C00")) # Dark Orange
+                self.table.setItem(r, 7, item_7)
+
+                # Col 8: 완료여부 (Checkbox + Label) (기존 Col 7에서 이동)
                 is_manually_completed = (status == '완료')
                 is_auto_completed = is_purchase_completed(purchase_id)
                 is_completed_overall = is_manually_completed or is_auto_completed
@@ -469,7 +516,7 @@ class PurchaseWidget(QtWidgets.QWidget):
                 checkbox_layout.setSpacing(5)  # 체크박스와 라벨 간격
                 # ✅ 위젯 전체에 툴팁을 주려면 checkbox_widget.setToolTip(tooltip_text)을 쓸 수 있으나,
                 # 내부 요소(체크박스 등)의 툴팁과 충돌할 수 있어 생략하거나 필요시 추가하세요.
-                self.table.setCellWidget(r, 7, checkbox_widget)
+                self.table.setCellWidget(r, 8, checkbox_widget)
 
                 # ✅ 2. is_completed_overall 상태에 따라 적용할 색상 결정
                 fg_color = QColor(comp_fg if is_completed_overall else incomp_fg)
