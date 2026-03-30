@@ -44,14 +44,17 @@ class MoneyLineEdit(QtWidgets.QLineEdit):
         # 현재 텍스트에서 쉼표 제거
         text = self.text().replace(',', '').replace(' ', '')
 
-        if not text:
-            text = "0"
-
-        # 숫자가 아닌 문자 제거
+        # 음수 부호 처리
+        is_negative = text.startswith('-')
+        
+        # 숫자가 아닌 문자 제거 (부호 제외)
         text = ''.join(c for c in text if c.isdigit())
 
         if not text:
             text = "0"
+            if is_negative:
+                # 부호만 있는 경우 필드에 표시할 수 있도록 함 (전담 처리 필요 시)
+                pass
 
         try:
             value = int(text)
@@ -62,6 +65,13 @@ class MoneyLineEdit(QtWidgets.QLineEdit):
 
             # 천 단위 구분 기호 추가
             formatted = f"{value:,}"
+            if is_negative and value > 0:
+                formatted = "-" + formatted
+            elif is_negative and value == 0:
+                # 0인데 마이너스 부호가 입력된 경우 필드에 부호만 남길 수 있게 하거나
+                # 일단 "-"로 표시하여 다음 숫자 입력을 기다림
+                if original_text == "-":
+                    formatted = "-"
 
             # 텍스트 변경 이벤트를 일시적으로 차단
             self.blockSignals(True)
@@ -79,7 +89,7 @@ class MoneyLineEdit(QtWidgets.QLineEdit):
 
         except ValueError:
             self.blockSignals(True)
-            self.setText("0")
+            self.setText("-" if is_negative and original_text == "-" else "0")
             self.blockSignals(False)
 
     def get_value(self):
@@ -124,8 +134,16 @@ class MoneyLineEdit(QtWidgets.QLineEdit):
             super().keyPressEvent(event)
             return
 
-        # 숫자만 허용
-        if event.text().isdigit():
+        # 숫자 및 마이너스 부호 허용
+        # 커서가 맨 앞이거나, 텍스트가 전체 선택된 상태라면 마이너스 부호를 허용함
+        is_minus_key = (event.text() == '-')
+        can_insert_minus = is_minus_key and (self.cursorPosition() == 0 or self.hasSelectedText())
+        
+        if event.text().isdigit() or can_insert_minus:
+            # 이미 부호가 있는데 또 입력하려는 경우는 무시 (전체 선택된 경우는 제외)
+            if is_minus_key and '-' in self.text() and not self.hasSelectedText():
+                QtWidgets.QApplication.beep()
+                return
             super().keyPressEvent(event)
         else:
             # 그 외 키는 무시 (경고음)

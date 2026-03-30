@@ -778,6 +778,8 @@ CREATE TABLE IF NOT EXISTS purchase_tax_invoices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     issue_date TEXT NOT NULL,       -- 발행일
     supplier_id INTEGER NOT NULL,   -- 공급처 FK
+    supply_amount INTEGER DEFAULT 0, -- 공급가액 (원단위) [추가]
+    tax_amount INTEGER DEFAULT 0,    -- 세액 (원단위) [추가]
     total_amount INTEGER DEFAULT 0, -- 총 공급가액+세액 (원단위)
     approval_number TEXT UNIQUE,    -- 국세청 승인번호
     status TEXT DEFAULT '미지불',   -- 미지불, 부분지불, 지불완료
@@ -822,6 +824,7 @@ CREATE TABLE IF NOT EXISTS purchase_tax_invoice_items (
     supply_amount INTEGER DEFAULT 0,
     tax_amount INTEGER DEFAULT 0,
     purchase_id INTEGER,
+    purchase_item_id INTEGER,       -- 발주 품목 원본 ID (중복 방지용) [추가]
     purchase_no TEXT,
     note TEXT,
     FOREIGN KEY (tax_invoice_id) REFERENCES purchase_tax_invoices(id) ON DELETE CASCADE,
@@ -6887,8 +6890,11 @@ def add_or_update_supplier(data: dict) -> int:
                 address = excluded.address,
                 updated_at = datetime('now','localtime')
         """, (data.get('biz_no'), data['name'], data.get('ceo_name'), data.get('contact'), data.get('address')))
+        # INSERT 또는 UPDATE 이후 확실하게 ID를 가져옴
+        cur.execute("SELECT id FROM suppliers WHERE name = ?", (data['name'],))
+        row = cur.fetchone()
         conn.commit()
-        return cur.lastrowid or query_one("SELECT id FROM suppliers WHERE name=?", (data['name'],))[0]
+        return row[0] if row else -1
     except Exception as e:
         print(f"add_or_update_supplier error: {e}")
         return -1
@@ -6905,13 +6911,16 @@ def add_purchase_tax_invoice(invoice_data: dict, purchase_ids: list[int] = None)
         res = query_one("SELECT id FROM suppliers WHERE name = ?", (supplier_name,))
         if res:
             supplier_id = res[0]
-            invoice_data['supplier_id'] = supplier_id
         else:
-            try:
-                supplier_id = add_or_update_supplier({'name': supplier_name})
-                invoice_data['supplier_id'] = supplier_id
-            except:
-                pass
+            # 공급자가 없으면 생성
+            supplier_id = add_or_update_supplier({'name': supplier_name})
+            
+    if not supplier_id or supplier_id == -1:
+        # 여전히 ID가 없으면 진행 불가
+        print(f"Error: Could not resolve supplier_id for '{supplier_name}'")
+        return -1
+        
+    invoice_data['supplier_id'] = supplier_id
 
     conn = get_conn()
     try:
@@ -7225,7 +7234,7 @@ def get_tax_invoice_items(invoice_id):
         for r in rows
     ]
 
-def add_tax_invoice_item(invoice_id, item_name, spec, quantity, unit_price, purchase_no=None, purchase_id=None, note=None):
+def add_tax_invoice_item(invoice_id, item_name, spec, quantity, unit_price, purchase_no=None, purchase_id=None, purchase_item_id=None, note=None):
     """세금계산서에 품목을 추가하고 헤더의 총액을 업데이트합니다."""
     supply = quantity * unit_price
     tax = round(supply * 0.1)
@@ -7233,9 +7242,9 @@ def add_tax_invoice_item(invoice_id, item_name, spec, quantity, unit_price, purc
     execute("""
         INSERT INTO purchase_tax_invoice_items (
             tax_invoice_id, item_name, spec, quantity, unit_price, 
-            supply_amount, tax_amount, purchase_id, purchase_no, note
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (invoice_id, item_name, spec, quantity, unit_price, supply, tax, purchase_id, purchase_no, note))
+            supply_amount, tax_amount, purchase_id, purchase_item_id, purchase_no, note
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (invoice_id, item_name, spec, quantity, unit_price, supply, tax, purchase_id, purchase_item_id, purchase_no, note))
     
     update_tax_invoice_total(invoice_id)
     
@@ -7338,3 +7347,9 @@ def get_all_tax_invoices(start_date=None, end_date=None):
 
 def delete_tax_invoice(invoice_id):
     return delete_purchase_tax_invoice(invoice_id)
+
+def get_invoiced_item_ids_for_po(purchase_id):
+    """특정 발주(PO)에서 이미 세금계산서가 발행된 품목 ID 목록을 반환합니다."""
+    sql = "SELECT DISTINCT purchase_item_id FROM purchase_tax_invoice_items WHERE purchase_id = ? AND purchase_item_id IS NOT NULL"
+    rows = query_all(sql, (purchase_id,))
+    return [r[0] for r in rows]

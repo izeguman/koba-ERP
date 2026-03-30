@@ -25,6 +25,11 @@ class TaxInvoiceItemDialog(QtWidgets.QDialog):
         self.supplier_id = None # 공급자 ID 보관용
         self.settings = QtCore.QSettings("KOBATECH", "ProductManager")
         
+        # 합계 금액 저장을 위한 속성 초기화
+        self.supply_amount = 0
+        self.tax_amount = 0
+        self.total_amount = 0
+        
         self.setWindowTitle("세금계산서 수정" if self.is_edit_mode else "세금계산서 등록")
         self.setMinimumWidth(1000)
         self.setMinimumHeight(600)
@@ -68,12 +73,13 @@ class TaxInvoiceItemDialog(QtWidgets.QDialog):
         items_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #007bff;")
         layout.addWidget(items_label)
         
-        self.items_table = QtWidgets.QTableWidget(0, 9)
+        self.items_table = QtWidgets.QTableWidget(0, 10)
         self.items_table.setHorizontalHeaderLabels([
-            "품목", "규격", "수량", "단가", "공급가액", "세액", "비고(발주번호)", "발주ID", "ItemID"
+            "품목", "규격", "수량", "단가", "공급가액", "세액", "비고(발주번호)", "발주ID", "ItemID", "POItemID"
         ])
         self.items_table.setColumnHidden(7, True)  # 발주ID 숨김
         self.items_table.setColumnHidden(8, True)  # ItemID 숨김
+        self.items_table.setColumnHidden(9, True)  # POItemID (원본 발주 품목 ID) 숨김
         
         # 컬럼 너비 설정
         self.items_table.setColumnWidth(0, 150)  # 품목
@@ -163,7 +169,18 @@ class TaxInvoiceItemDialog(QtWidgets.QDialog):
         
     def add_item(self):
         """품목 추가 다이얼로그"""
-        dialog = AddItemDialog(self.available_purchases, self)
+        invoice_date = self.date_edit.date().toString("yyyy-MM-dd")
+        
+        # 현재 테이블에 이미 올라와 있는 품목 ID 수집 (중복 방지용)
+        existing_item_ids = []
+        for r in range(self.items_table.rowCount()):
+            pid_item = self.items_table.item(r, 9)
+            if pid_item:
+                pid_text = pid_item.text()
+                if pid_text and pid_text.isdigit():
+                    existing_item_ids.append(int(pid_text))
+                
+        dialog = AddItemDialog(self.available_purchases, invoice_date, existing_item_ids, self)
         if dialog.exec():
             item_data = dialog.get_data()
             
@@ -179,7 +196,8 @@ class TaxInvoiceItemDialog(QtWidgets.QDialog):
             self.items_table.setItem(row, 5, QtWidgets.QTableWidgetItem(format_money(item_data['tax_amount'])))
             self.items_table.setItem(row, 6, QtWidgets.QTableWidgetItem(item_data['purchase_no']))
             self.items_table.setItem(row, 7, QtWidgets.QTableWidgetItem(str(item_data['purchase_id']) if item_data['purchase_id'] else ""))
-            self.items_table.setItem(row, 8, QtWidgets.QTableWidgetItem(""))  # ItemID는 저장 후 설정
+            self.items_table.setItem(row, 8, QtWidgets.QTableWidgetItem(""))  # ItemID (세금계산서 DB ID)
+            self.items_table.setItem(row, 9, QtWidgets.QTableWidgetItem(str(item_data['purchase_item_id']) if item_data.get('purchase_item_id') else "")) # 원본 발주품목 ID
             
             self.update_totals()
             
@@ -209,6 +227,11 @@ class TaxInvoiceItemDialog(QtWidgets.QDialog):
                 pass
                 
         grand_total = supply_total + tax_total
+        
+        # 클래스 속성에 저장하여 save()에서 사용 가능하게 함
+        self.supply_amount = supply_total
+        self.tax_amount = tax_total
+        self.total_amount = grand_total
         
         self.lbl_supply_total.setText(f"{format_money(supply_total)} 원")
         self.lbl_tax_total.setText(f"{format_money(tax_total)} 원")
@@ -244,7 +267,8 @@ class TaxInvoiceItemDialog(QtWidgets.QDialog):
             self.items_table.setItem(row, 5, QtWidgets.QTableWidgetItem(format_money(item['tax_amount'])))
             self.items_table.setItem(row, 6, QtWidgets.QTableWidgetItem(item.get('purchase_no', "") or ""))
             self.items_table.setItem(row, 7, QtWidgets.QTableWidgetItem(str(item.get('purchase_id', "")) if item.get('purchase_id') else ""))
-            self.items_table.setItem(row, 8, QtWidgets.QTableWidgetItem(str(item['id'])))  # item_id 저장
+            self.items_table.setItem(row, 8, QtWidgets.QTableWidgetItem(str(item['id'])))  # invoice_item_id
+            self.items_table.setItem(row, 9, QtWidgets.QTableWidgetItem(str(item.get('purchase_item_id', "")) if item.get('purchase_item_id') else "")) # 원본 발주품목 ID
         
         self.update_totals()
         
@@ -265,26 +289,27 @@ class TaxInvoiceItemDialog(QtWidgets.QDialog):
                 return
             
             if self.is_edit_mode:
-                # 수정 모드: 기존 품목 삭제 후 재생성
-                conn = get_conn()
-                try:
-                    cur = conn.cursor()
-                    # 기본 정보 업데이트
-                    cur.execute("""
-                        UPDATE purchase_tax_invoices
-                        SET issue_date = ?, supplier_id = ?, approval_number = ?, updated_at = datetime('now','localtime')
-                        WHERE id = ?
-                    """, (issue_date, supplier_id if hasattr(self, "supplier_id") else 0, approval_number, self.invoice_id))
-                    
-                    # 기존 품목 삭제
-                    cur.execute("DELETE FROM purchase_tax_invoice_items WHERE tax_invoice_id = ?", (self.invoice_id,))
-                    
-                    # 기존 매핑 삭제
-                    cur.execute("DELETE FROM purchase_invoice_links WHERE tax_invoice_id = ?", (self.invoice_id,))
-                    
-                    conn.commit()
-                finally:
-                    conn.close()
+                # 수정 모드: 헤더 정보 업데이트 (ID는 기존 것 사용하거나 이름으로 조회)
+                invoice_data = {
+                    "id": self.invoice_id,
+                    "issue_date": issue_date,
+                    "supplier_name": supplier_name,
+                    "total_amount": self.total_amount,
+                    "supply_amount": self.supply_amount,
+                    "tax_amount": self.tax_amount,
+                    "approval_number": approval_number
+                }
+                # db.py의 add_purchase_tax_invoice는 ID가 있으면 UPDATE를 수행함
+                from ..db import add_purchase_tax_invoice
+                self.invoice_id = add_purchase_tax_invoice(invoice_data)
+                
+                if self.invoice_id == -1:
+                    raise Exception("세금계산서 헤더 업데이트에 실패했습니다. (공급자 정보 확인 필요)")
+
+                # 기존 품목 삭제 후 재생성 (트랜잭션 대신 순차 처리)
+                from ..db import execute
+                execute("DELETE FROM purchase_tax_invoice_items WHERE tax_invoice_id = ?", (self.invoice_id,))
+                execute("DELETE FROM purchase_invoice_links WHERE tax_invoice_id = ?", (self.invoice_id,))
             else:
                 # 신규 모드: 세금계산서 생성
                 invoice_data = {
@@ -296,7 +321,7 @@ class TaxInvoiceItemDialog(QtWidgets.QDialog):
                     "tax_amount": self.tax_amount,
                     "approval_number": approval_number
                 }
-                self.invoice_id = add_purchase_tax_invoice(invoice_data)
+                self.invoice_id = add_tax_invoice(invoice_data)
             
             # 품목 추가
             for row in range(self.items_table.rowCount()):
@@ -307,10 +332,12 @@ class TaxInvoiceItemDialog(QtWidgets.QDialog):
                 purchase_no = self.items_table.item(row, 6).text()
                 purchase_id_text = self.items_table.item(row, 7).text()
                 purchase_id = int(purchase_id_text) if purchase_id_text else None
+                purchase_item_id_text = self.items_table.item(row, 9).text()
+                purchase_item_id = int(purchase_item_id_text) if purchase_item_id_text else None
                 
                 add_tax_invoice_item(
                     self.invoice_id, item_name, spec, quantity, unit_price,
-                    purchase_no, purchase_id
+                    purchase_no, purchase_id, purchase_item_id
                 )
             
             # 총액 업데이트
@@ -344,9 +371,17 @@ class TaxInvoiceItemDialog(QtWidgets.QDialog):
 class AddItemDialog(QtWidgets.QDialog):
     """품목 추가 다이얼로그"""
     
-    def __init__(self, available_purchases, parent=None):
+    def __init__(self, available_purchases, invoice_date, already_added_item_ids=None, parent=None):
         super().__init__(parent)
-        self.available_purchases = available_purchases
+        self.invoice_date = invoice_date
+        self.already_added_item_ids = already_added_item_ids or []
+        self.selected_purchase_item_id = None # 선택된 발주 품목 원본 ID
+        
+        # 발행일 기준으로 이전 발주서만 필터링
+        self.available_purchases = [
+            p for p in available_purchases 
+            if p[2] <= self.invoice_date
+        ]
         
         self.setWindowTitle("품목 추가")
         self.setMinimumWidth(500)
@@ -363,7 +398,7 @@ class AddItemDialog(QtWidgets.QDialog):
         self.spec_edit.setPlaceholderText("예: 식")
         
         self.quantity_spin = QtWidgets.QSpinBox()
-        self.quantity_spin.setRange(1, 1000000)
+        self.quantity_spin.setRange(-1000000, 1000000)
         self.quantity_spin.setValue(1)
         self.quantity_spin.valueChanged.connect(self.calculate_amounts)
         
@@ -381,8 +416,10 @@ class AddItemDialog(QtWidgets.QDialog):
         self.purchase_combo = QtWidgets.QComboBox()
         self.purchase_combo.addItem("(선택 안 함)", None)
         for purchase in self.available_purchases:
-            # id, purchase_no, purchase_dt, status, total_amount
-            display_text = f"{purchase[1]} - {purchase[2]} ({format_money(purchase[4])}원)"
+            # purchase: (id, purchase_no, purchase_dt, status, actual_amount_cents)
+            # actual_amount가 Cent 단위이므로 100으로 나누어 표시
+            amount_won = (purchase[4] or 0) // 100
+            display_text = f"{purchase[1]} - {purchase[2]} ({format_money(amount_won)}원)"
             self.purchase_combo.addItem(display_text, purchase[0])
         self.purchase_combo.currentIndexChanged.connect(self.on_purchase_changed)
         
@@ -415,7 +452,7 @@ class AddItemDialog(QtWidgets.QDialog):
             unit_price = self.unit_price_edit.get_value()
             
             supply_amount = quantity * unit_price
-            tax_amount = int(supply_amount * 0.1)
+            tax_amount = round(supply_amount * 0.1)
             
             self.supply_amount_label.setText(f"{format_money(supply_amount)} 원")
             self.tax_amount_label.setText(f"{format_money(tax_amount)} 원")
@@ -432,16 +469,33 @@ class AddItemDialog(QtWidgets.QDialog):
             return
             
         # 발주 품목 조회
+        from ..db import get_invoiced_item_ids_for_po
+        try:
+            invoiced_ids = get_invoiced_item_ids_for_po(purchase_id)
+        except Exception as e:
+            print(f"ERROR fetching invoiced IDs: {e}")
+            invoiced_ids = []
+            
+        exclude_ids = set(self.already_added_item_ids + invoiced_ids)
+        
         conn = get_conn()
         try:
             cur = conn.cursor()
             cur.execute("""
-                SELECT item_code, rev, product_name, qty, unit_price_cents
+                SELECT item_code, rev, product_name, qty, unit_price_cents, id
                 FROM purchase_items
                 WHERE purchase_id = ?
                 ORDER BY item_code
             """, (purchase_id,))
-            items = cur.fetchall()
+            all_items = cur.fetchall()
+            
+            # 이미 등록된 품목 필터링
+            items = [it for it in all_items if it[5] not in exclude_ids]
+            
+            # 품목이 있는데 다 필터링 된 경우
+            if all_items and not items:
+                # 필드가 현재 비어있으면 초기화는 할 필요 없지만, 버튼 동작에서 메시지 줄 때 사용
+                pass
         finally:
             conn.close()
             
@@ -457,8 +511,9 @@ class AddItemDialog(QtWidgets.QDialog):
 
     def apply_purchase_item(self, item):
         """선택된 발주 품목 데이터를 UI 필드에 적용"""
-        # item: (item_code, rev, product_name, qty, unit_price_cents)
-        item_code, rev, product_name, qty, unit_price_cents = item
+        # item: (item_code, rev, product_name, qty, unit_price_cents, id)
+        item_code, rev, product_name, qty, unit_price_cents, item_id = item
+        self.selected_purchase_item_id = item_id
         
         # 품목명 조합
         item_name = f"{item_code}"
@@ -481,21 +536,36 @@ class AddItemDialog(QtWidgets.QDialog):
                 return
             
             # 발주 품목 조회
+            from ..db import get_invoiced_item_ids_for_po
+            try:
+                invoiced_ids = get_invoiced_item_ids_for_po(purchase_id)
+            except:
+                invoiced_ids = []
+            exclude_ids = set(self.already_added_item_ids + invoiced_ids)
+            
             conn = get_conn()
             try:
                 cur = conn.cursor()
                 cur.execute("""
-                    SELECT item_code, rev, product_name, qty, unit_price_cents
+                    SELECT item_code, rev, product_name, qty, unit_price_cents, id
                     FROM purchase_items
                     WHERE purchase_id = ?
                     ORDER BY item_code
                 """, (purchase_id,))
-                items = cur.fetchall()
+                all_items = cur.fetchall()
+                # 필터링
+                items = [it for it in all_items if it[5] not in exclude_ids]
             finally:
                 conn.close()
         
         if not items:
-            QtWidgets.QMessageBox.information(self, "알림", "이 발주에 품목이 없습니다.")
+            if all_items:
+                QtWidgets.QMessageBox.information(
+                    self, "알림", 
+                    "이 발주서의 모든 품목이 이미 이 세금계산서 또는 다른 세금계산서에 등록되어 있습니다."
+                )
+            else:
+                QtWidgets.QMessageBox.information(self, "알림", "이 발주에 조회 가능한 품목이 없습니다.")
             return
         
         # 품목 선택 다이얼로그
@@ -511,7 +581,7 @@ class AddItemDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(self, "경고", "품목명을 입력해주세요.")
             return
             
-        if self.unit_price_edit.get_value() <= 0:
+        if self.unit_price_edit.get_value() == 0:
             QtWidgets.QMessageBox.warning(self, "경고", "단가를 입력해주세요.")
             return
             
@@ -540,7 +610,8 @@ class AddItemDialog(QtWidgets.QDialog):
             'supply_amount': supply_amount,
             'tax_amount': tax_amount,
             'purchase_no': purchase_no,
-            'purchase_id': purchase_id
+            'purchase_id': purchase_id,
+            'purchase_item_id': self.selected_purchase_item_id
         }
 
 
@@ -572,7 +643,7 @@ class PurchaseItemSelectionDialog(QtWidgets.QDialog):
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         
         for row, item in enumerate(self.items):
-            item_code, rev, product_name, qty, unit_price_cents = item
+            item_code, rev, product_name, qty, unit_price_cents, item_id = item
             self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(item_code or ""))
             self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(rev or ""))
             self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(product_name or ""))

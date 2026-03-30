@@ -1,0 +1,206 @@
+2026-03-29 20:25:14,964 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-29 20:25:24,481 [INFO] Main Window icon explicitly set from resource.
+2026-03-29 20:26:10,152 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\purchase_widget.py", line 245, in <lambda>
+    invoice_action.triggered.connect(lambda: self.register_purchase_invoice(position))
+                                             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\purchase_widget.py", line 262, in register_purchase_invoice
+    dlg = PurchaseInvoiceDialog(self)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\purchase_invoice_dialog.py", line 17, in __init__
+    self.setup_ui()
+    ~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\purchase_invoice_dialog.py", line 53, in setup_ui
+    self.edit_amount.setGroupSeparator(True)
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PySide6.QtWidgets.QSpinBox' object has no attribute 'setGroupSeparator'. Did you mean: 'setGroupSeparatorShown'?
+
+2026-03-29 20:26:28,075 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\purchase_widget.py", line 245, in <lambda>
+    invoice_action.triggered.connect(lambda: self.register_purchase_invoice(position))
+                                             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\purchase_widget.py", line 262, in register_purchase_invoice
+    dlg = PurchaseInvoiceDialog(self)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\purchase_invoice_dialog.py", line 17, in __init__
+    self.setup_ui()
+    ~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\purchase_invoice_dialog.py", line 53, in setup_ui
+    self.edit_amount.setGroupSeparator(True)
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PySide6.QtWidgets.QSpinBox' object has no attribute 'setGroupSeparator'. Did you mean: 'setGroupSeparatorShown'?
+
+2026-03-29 20:27:08,645 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-29 20:27:11,513 [INFO] Main Window icon explicitly set from resource.
+2026-03-29 21:25:15,140 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-29 21:25:25,526 [INFO] Main Window icon explicitly set from resource.
+2026-03-29 21:38:38,109 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-29 21:38:47,725 [INFO] Main Window icon explicitly set from resource.
+2026-03-29 22:14:15,325 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-29 22:14:16,701 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\run.py", line 105, in <module>
+    main()
+    ~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\run.py", line 81, in main
+    from app.ui.main_window import MainWindow
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\main_window.py", line 29, in <module>
+    from .tax_invoice_widget import TaxInvoiceWidget
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\tax_invoice_widget.py", line 8, in <module>
+    from ..db import (
+    ...<2 lines>...
+    )
+ImportError: cannot import name 'format_money' from 'app.db' (c:\Users\kobat\OneDrive\Product_Management_System\app\db.py)
+
+2026-03-29 22:15:10,307 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-29 22:15:11,507 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\run.py", line 105, in <module>
+    main()
+    ~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\run.py", line 81, in main
+    from app.ui.main_window import MainWindow
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\main_window.py", line 29, in <module>
+    from .tax_invoice_widget import TaxInvoiceWidget
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\tax_invoice_widget.py", line 8, in <module>
+    from ..db import (
+    ...<2 lines>...
+    )
+ImportError: cannot import name 'format_money' from 'app.db' (c:\Users\kobat\OneDrive\Product_Management_System\app\db.py)
+
+2026-03-29 22:16:35,241 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-29 22:16:38,914 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "C:\Users\kobat\OneDrive\Product_Management_System\run.py", line 105, in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\kobat\OneDrive\Product_Management_System\run.py", line 83, in main
+    win = MainWindow()
+  File "C:\Users\kobat\OneDrive\Product_Management_System\app\ui\main_window.py", line 143, in __init__
+    self.tax_invoice_widget = TaxInvoiceWidget(settings=self.settings)
+                              ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TaxInvoiceWidget.__init__() got an unexpected keyword argument 'settings'
+
+2026-03-29 22:17:00,065 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-29 22:17:03,010 [INFO] Main Window icon explicitly set from resource.
+2026-03-29 22:17:36,473 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-29 22:17:39,318 [INFO] Main Window icon explicitly set from resource.
+2026-03-29 22:17:42,593 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\main_window.py", line 656, in on_tab_changed
+    self.tax_invoice_widget.load_data()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'TaxInvoiceWidget' object has no attribute 'load_data'
+
+2026-03-29 22:17:44,356 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\tax_invoice_widget.py", line 202, in view_invoice_details
+    dialog = TaxInvoiceDetailDialog(detail, self)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\tax_invoice_widget.py", line 242, in __init__
+    self.setup_ui()
+    ~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\tax_invoice_widget.py", line 273, in setup_ui
+    self.items_table.setItem(row, 0, QtWidgets.QTableWidgetItem(item[1] or ""))
+                                                                ~~~~^^^
+KeyError: 1
+
+2026-03-29 22:17:45,384 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\tax_invoice_widget.py", line 202, in view_invoice_details
+    dialog = TaxInvoiceDetailDialog(detail, self)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\tax_invoice_widget.py", line 242, in __init__
+    self.setup_ui()
+    ~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\tax_invoice_widget.py", line 273, in setup_ui
+    self.items_table.setItem(row, 0, QtWidgets.QTableWidgetItem(item[1] or ""))
+                                                                ~~~~^^^
+KeyError: 1
+
+2026-03-29 22:17:47,301 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\tax_invoice_widget.py", line 183, in edit_invoice
+    dialog = TaxInvoiceItemDialog(purchase_id=None, invoice_id=invoice_id, parent=self)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\tax_invoice_item_dialog.py", line 37, in __init__
+    self.load_invoice_data()
+    ~~~~~~~~~~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\tax_invoice_item_dialog.py", line 237, in load_invoice_data
+    self.items_table.setItem(row, 0, QtWidgets.QTableWidgetItem(item[1] or ""))
+                                                                ~~~~^^^
+KeyError: 1
+
+2026-03-29 22:20:46,723 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-29 22:20:49,685 [INFO] Main Window icon explicitly set from resource.
+2026-03-29 22:21:41,935 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-29 22:21:44,700 [INFO] Main Window icon explicitly set from resource.
+2026-03-29 22:23:10,467 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\tax_invoice_item_dialog.py", line 165, in add_item
+    dialog = AddItemDialog(self.available_purchases, self)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\tax_invoice_item_dialog.py", line 342, in __init__
+    self.setup_ui()
+    ~~~~~~~~~~~~~^^
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\tax_invoice_item_dialog.py", line 373, in setup_ui
+    display_text = f"{purchase[1]} - {purchase[2]} ({format_money(purchase[4])}원)"
+                                                                  ~~~~~~~~^^^
+IndexError: tuple index out of range
+
+2026-03-29 22:34:27,077 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-29 22:34:36,652 [INFO] Main Window icon explicitly set from resource.
+2026-03-29 22:37:08,388 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-29 22:37:11,517 [INFO] Main Window icon explicitly set from resource.
+2026-03-29 22:44:30,078 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-29 22:44:32,827 [INFO] Main Window icon explicitly set from resource.
+2026-03-29 22:48:55,371 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-29 22:48:57,060 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "C:\Users\kobat\OneDrive\Product_Management_System\run.py", line 105, in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\kobat\OneDrive\Product_Management_System\run.py", line 83, in main
+    win = MainWindow()
+  File "C:\Users\kobat\OneDrive\Product_Management_System\app\ui\main_window.py", line 108, in __init__
+    self.bom_widget = BomWidget(settings=self.settings)
+                      ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kobat\OneDrive\Product_Management_System\app\ui\bom_widget.py", line 34, in __init__
+    self.load_product_list()
+    ~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\kobat\OneDrive\Product_Management_System\app\ui\bom_widget.py", line 252, in load_product_list
+    products = get_all_product_master(include_inactive=include_inactive, type_filter=target_types)
+  File "C:\Users\kobat\OneDrive\Product_Management_System\app\db.py", line 1768, in get_all_product_master
+    return query_all(base_sql, tuple(params))
+  File "C:\Users\kobat\OneDrive\Product_Management_System\app\db.py", line 1375, in query_all
+    conn = get_conn()
+  File "C:\Users\kobat\OneDrive\Product_Management_System\app\db.py", line 1298, in get_conn
+    conn.executescript(SCHEMA_SQL)
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+sqlite3.OperationalError: near "UNIQUE": syntax error
+
+2026-03-29 22:49:29,944 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-29 22:49:32,954 [INFO] Main Window icon explicitly set from resource.
+2026-03-29 22:54:26,717 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-29 22:54:30,067 [INFO] Main Window icon explicitly set from resource.
+2026-03-29 23:00:49,652 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-29 23:00:52,432 [INFO] Main Window icon explicitly set from resource.
+2026-03-29 23:01:12,825 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "C:\Users\kobat\OneDrive\Product_Management_System\app\ui\tax_invoice_widget.py", line 185, in edit_invoice
+    self.load_invoices()
+    ^^^^^^^^^^^^^^^^^^
+AttributeError: 'TaxInvoiceWidget' object has no attribute 'load_invoices'. Did you mean: 'add_invoice'?
+
+2026-03-29 23:02:35,752 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "C:\Users\kobat\OneDrive\Product_Management_System\app\ui\tax_invoice_widget.py", line 185, in edit_invoice
+    self.load_invoices()
+    ^^^^^^^^^^^^^^^^^^
+AttributeError: 'TaxInvoiceWidget' object has no attribute 'load_invoices'. Did you mean: 'add_invoice'?
+
+2026-03-29 23:02:50,056 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "C:\Users\kobat\OneDrive\Product_Management_System\app\ui\tax_invoice_widget.py", line 185, in edit_invoice
+    self.load_invoices()
+    ^^^^^^^^^^^^^^^^^^
+AttributeError: 'TaxInvoiceWidget' object has no attribute 'load_invoices'. Did you mean: 'add_invoice'?
+
+2026-03-29 23:08:37,807 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-29 23:08:41,194 [INFO] Main Window icon explicitly set from resource.
