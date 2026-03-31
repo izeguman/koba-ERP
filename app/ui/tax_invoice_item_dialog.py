@@ -56,14 +56,24 @@ class TaxInvoiceItemDialog(QtWidgets.QDialog):
         self.date_edit.setMinimumWidth(110)  # 날짜 선택 삼각형이 날짜 바로 옆에 오도록
         self.date_edit.setMaximumWidth(110)  # 최대 너비도 제한하여 삼각형이 오른쪽 끝으로 가지 않도록
         
-        self.supplier_edit = QtWidgets.QLineEdit()
-        self.supplier_edit.setPlaceholderText("예: 위드에프 주식회사")
+        from .supplier_autocomplete import SupplierAutocompleteLineEdit
+        self.supplier_edit = SupplierAutocompleteLineEdit()
+        self.supplier_edit.supplier_selected.connect(self._on_supplier_selected)
+        
+        self.btn_manage_supplier = QtWidgets.QPushButton("ℹ")
+        self.btn_manage_supplier.setToolTip("공급자 상세 정보 수정")
+        self.btn_manage_supplier.setFixedWidth(30)
+        self.btn_manage_supplier.clicked.connect(self.open_supplier_manager)
+        
+        supplier_layout = QtWidgets.QHBoxLayout()
+        supplier_layout.addWidget(self.supplier_edit)
+        supplier_layout.addWidget(self.btn_manage_supplier)
         
         self.approval_number_edit = QtWidgets.QLineEdit()
         self.approval_number_edit.setPlaceholderText("예: 20260124-10250124-19575989")
         
         header_layout.addRow("발행일:", self.date_edit)
-        header_layout.addRow("공급자:", self.supplier_edit)
+        header_layout.addRow("공급자:", supplier_layout)
         header_layout.addRow("승인번호:", self.approval_number_edit)
         
         layout.addWidget(header_group)
@@ -237,6 +247,22 @@ class TaxInvoiceItemDialog(QtWidgets.QDialog):
         self.lbl_tax_total.setText(f"{format_money(tax_total)} 원")
         self.lbl_grand_total.setText(f"{format_money(grand_total)} 원")
     
+    def _on_supplier_selected(self, data):
+        """공급자 자동완성에서 선택 시 ID 보관"""
+        self.supplier_id = data.get('id')
+    
+    def open_supplier_manager(self):
+        """공급자 관리 다이얼로그 열기"""
+        from .supplier_editor_dialog import SupplierEditorDialog
+        dialog = SupplierEditorDialog(self, initial_supplier_id=self.supplier_id)
+        if dialog.exec():
+            # 수정 후 다시 선택된 공급자가 있으면 상호명 업데이트
+            if self.supplier_id:
+                from ..db import get_supplier
+                data = get_supplier(self.supplier_id)
+                if data:
+                    self.supplier_edit.setText(data['name'])
+
     def load_invoice_data(self):
         """기존 세금계산서 데이터 로드 (수정 모드)"""
         from ..db import get_tax_invoice_detail
@@ -321,7 +347,10 @@ class TaxInvoiceItemDialog(QtWidgets.QDialog):
                     "tax_amount": self.tax_amount,
                     "approval_number": approval_number
                 }
-                self.invoice_id = add_tax_invoice(invoice_data)
+                this_invoice_id = add_tax_invoice(invoice_data)
+                if this_invoice_id == -1:
+                    raise Exception("세금계산서 헤더 등록에 실패했습니다.\n(공급자 정보 확인 또는 이미 등록된 승인번호인지 확인해주세요.)")
+                self.invoice_id = this_invoice_id
             
             # 품목 추가
             for row in range(self.items_table.rowCount()):
@@ -529,7 +558,8 @@ class AddItemDialog(QtWidgets.QDialog):
         self.calculate_amounts()
 
     def select_from_purchase_items(self, items=None):
-        """발주 품목 목록에서 선택"""
+        """발주 품목 목록에서 선택용"""
+        all_items = items
         if items is None:
             purchase_id = self.purchase_combo.currentData()
             if not purchase_id:

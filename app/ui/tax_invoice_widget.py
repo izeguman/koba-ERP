@@ -77,18 +77,22 @@ class TaxInvoiceWidget(QtWidgets.QWidget):
         layout.addLayout(filter_layout)
         
         # 중간: 테이블
-        self.table = QtWidgets.QTableWidget(0, 6)
+        self.table = QtWidgets.QTableWidget(0, 10)
         self.table.setHorizontalHeaderLabels([
-            "발행일", "공급자", "총액", "품목수", "비고", "ID"
+            "발행일", "사업자등록번호", "공급자", "대표자명", "공급가액", "세액", "총액", "품목수", "비고", "ID"
         ])
-        self.table.setColumnHidden(5, True)  # ID 숨김
+        self.table.setColumnHidden(9, True)  # ID 숨김
         
         # 컬럼 너비
-        self.table.setColumnWidth(0, 100)  # 발행일
-        self.table.setColumnWidth(1, 150)  # 공급자
-        self.table.setColumnWidth(2, 150)  # 총액
-        self.table.setColumnWidth(3, 80)   # 품목수
-        self.table.setColumnWidth(4, 200)  # 비고
+        self.table.setColumnWidth(0, 90)   # 발행일
+        self.table.setColumnWidth(1, 120)  # 사업자번호
+        self.table.setColumnWidth(2, 150)  # 공급자
+        self.table.setColumnWidth(3, 90)   # 대표자명
+        self.table.setColumnWidth(4, 110)  # 공급가액
+        self.table.setColumnWidth(5, 100)  # 세액
+        self.table.setColumnWidth(6, 120)  # 총액
+        self.table.setColumnWidth(7, 70)   # 품목수
+        self.table.setColumnWidth(8, 200)  # 비고
         
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
@@ -96,6 +100,9 @@ class TaxInvoiceWidget(QtWidgets.QWidget):
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.show_context_menu)
         self.table.doubleClicked.connect(self.edit_invoice)
+        
+        # 컬럼 너비 변경 시 자동 저장 연결
+        self.table.horizontalHeader().sectionResized.connect(self.save_column_widths)
         
         layout.addWidget(self.table)
         
@@ -114,10 +121,15 @@ class TaxInvoiceWidget(QtWidgets.QWidget):
         btn_delete = QtWidgets.QPushButton("삭제")
         btn_delete.clicked.connect(self.delete_invoice)
         
+        btn_suppliers = QtWidgets.QPushButton("공급자 관리")
+        btn_suppliers.clicked.connect(self.open_supplier_manager)
+        
         btn_layout.addWidget(btn_add)
         btn_layout.addWidget(btn_edit)
         btn_layout.addWidget(btn_view)
         btn_layout.addWidget(btn_delete)
+        btn_layout.addSpacing(20)
+        btn_layout.addWidget(btn_suppliers)
         btn_layout.addStretch()
         
         layout.addLayout(btn_layout)
@@ -131,20 +143,24 @@ class TaxInvoiceWidget(QtWidgets.QWidget):
         
         self.table.setRowCount(0)
         for invoice in invoices:
-            # id, issue_date, supplier_name, total_amount, note, item_count
+            # id(0), issue_date(1), biz_no(2), name(3), ceo_name(4), supply(5), tax(6), total(7), count(8), note(9)
             row = self.table.rowCount()
             self.table.insertRow(row)
             
             self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(invoice[1] or ""))
             self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(invoice[2] or ""))
-            self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(f"{format_money(invoice[3])} 원"))
-            self.table.setItem(row, 3, QtWidgets.QTableWidgetItem(str(invoice[5])))
-            self.table.setItem(row, 4, QtWidgets.QTableWidgetItem(invoice[4] or ""))
+            self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(invoice[3] or ""))
+            self.table.setItem(row, 3, QtWidgets.QTableWidgetItem(invoice[4] or ""))
+            self.table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{format_money(invoice[5])} 원"))
+            self.table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{format_money(invoice[6])} 원"))
+            self.table.setItem(row, 6, QtWidgets.QTableWidgetItem(f"{format_money(invoice[7])} 원"))
+            self.table.setItem(row, 7, QtWidgets.QTableWidgetItem(str(invoice[8])))
+            self.table.setItem(row, 8, QtWidgets.QTableWidgetItem(invoice[9] or ""))
             
             # ID 저장
             id_item = QtWidgets.QTableWidgetItem(str(invoice[0]))
             id_item.setData(Qt.UserRole, invoice[0])
-            self.table.setItem(row, 5, id_item)
+            self.table.setItem(row, 9, id_item)
             
     def show_context_menu(self, position):
         """컨텍스트 메뉴"""
@@ -179,7 +195,7 @@ class TaxInvoiceWidget(QtWidgets.QWidget):
             QtWidgets.QMessageBox.warning(self, "경고", "수정할 세금계산서를 선택해주세요.")
             return
         
-        invoice_id = self.table.item(current_row, 5).data(Qt.UserRole)
+        invoice_id = self.table.item(current_row, 9).data(Qt.UserRole)
         dialog = TaxInvoiceItemDialog(purchase_id=None, invoice_id=invoice_id, parent=self)
         if dialog.exec():
             self.load_data()
@@ -191,7 +207,7 @@ class TaxInvoiceWidget(QtWidgets.QWidget):
             QtWidgets.QMessageBox.warning(self, "경고", "세금계산서를 선택해주세요.")
             return
         
-        invoice_id = self.table.item(current_row, 5).data(Qt.UserRole)
+        invoice_id = self.table.item(current_row, 9).data(Qt.UserRole)
         detail = get_tax_invoice_detail(invoice_id)
         
         if not detail:
@@ -209,7 +225,7 @@ class TaxInvoiceWidget(QtWidgets.QWidget):
             QtWidgets.QMessageBox.warning(self, "경고", "삭제할 세금계산서를 선택해주세요.")
             return
         
-        invoice_id = self.table.item(current_row, 5).data(Qt.UserRole)
+        invoice_id = self.table.item(current_row, 9).data(Qt.UserRole)
         
         reply = QtWidgets.QMessageBox.question(
             self, "확인",
@@ -224,6 +240,12 @@ class TaxInvoiceWidget(QtWidgets.QWidget):
                 QtWidgets.QMessageBox.information(self, "완료", "세금계산서가 삭제되었습니다.")
             except Exception as e:
                 QtWidgets.QMessageBox.critical(self, "오류", f"삭제 실패:\n{str(e)}")
+
+    def open_supplier_manager(self):
+        """공급자 관리 다이얼로그 열기"""
+        from .supplier_editor_dialog import SupplierEditorDialog
+        dialog = SupplierEditorDialog(self)
+        dialog.exec()
 
 
 class TaxInvoiceDetailDialog(QtWidgets.QDialog):

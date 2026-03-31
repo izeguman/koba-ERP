@@ -767,7 +767,10 @@ CREATE TABLE IF NOT EXISTS suppliers (
     biz_no TEXT,              -- 사업자번호
     name TEXT UNIQUE NOT NULL, -- 상호
     ceo_name TEXT,            -- 대표자명
+    biz_type TEXT,            -- 업태
+    biz_item TEXT,            -- 종목
     contact TEXT,             -- 연락처
+    email TEXT,               -- 이메일
     address TEXT,             -- 주소
     created_at TEXT DEFAULT (datetime('now','localtime')),
     updated_at TEXT DEFAULT (datetime('now','localtime'))
@@ -973,6 +976,19 @@ def get_conn() -> sqlite3.Connection:
 
         # --- 2. 세금계산서 및 지불 분리 (공급가액/세액) 패치 ---
         _patch_db_for_tax_split(conn)
+
+        # --- 2-1. suppliers 테이블 마이그레이션 (업태, 종목, 이메일) ---
+        cursor.execute("PRAGMA table_info(suppliers);")
+        sup_cols = [info[1] for info in cursor.fetchall()]
+        sup_new_cols = {
+            "biz_type": "TEXT",
+            "biz_item": "TEXT",
+            "email": "TEXT"
+        }
+        for col, dtype in sup_new_cols.items():
+            if col not in sup_cols:
+                print(f"Applying migration: Adding column '{col}' to 'suppliers'...")
+                cursor.execute(f"ALTER TABLE suppliers ADD COLUMN {col} {dtype};")
 
         conn.commit()
 
@@ -6885,7 +6901,7 @@ def get_all_suppliers() -> list[dict]:
 def search_suppliers(term: str) -> list[dict]:
     """상호, 사업자번호, 대표자명으로 공급처를 검색합니다."""
     sql = """
-        SELECT id, biz_no, name, ceo_name, contact, address 
+        SELECT id, biz_no, name, ceo_name, biz_type, biz_item, contact, email, address 
         FROM suppliers 
         WHERE name LIKE ? OR biz_no LIKE ? OR ceo_name LIKE ?
         ORDER BY name ASC
@@ -6893,9 +6909,34 @@ def search_suppliers(term: str) -> list[dict]:
     pattern = f"%{term}%"
     rows = query_all(sql, (pattern, pattern, pattern))
     return [
-        {'id': row[0], 'biz_no': row[1], 'name': row[2], 'ceo_name': row[3], 'contact': row[4], 'address': row[5]} 
+        {
+            'id': row[0], 'biz_no': row[1], 'name': row[2], 'ceo_name': row[3], 
+            'biz_type': row[4], 'biz_item': row[5], 'contact': row[6], 
+            'email': row[7], 'address': row[8]} 
         for row in rows
     ]
+
+def get_supplier(supplier_id: int) -> dict:
+    """ID로 공급처 상세 정보를 조회합니다."""
+    sql = """
+        SELECT id, biz_no, name, ceo_name, biz_type, biz_item, contact, email, address 
+        FROM suppliers 
+        WHERE id = ?
+    """
+    res = query_one(sql, (supplier_id,))
+    if res:
+        return {
+            'id': res[0], 'biz_no': res[1], 'name': res[2], 'ceo_name': res[3], 
+            'biz_type': res[4], 'biz_item': res[5], 'contact': res[6], 
+            'email': res[7], 'address': res[8]
+        }
+    return None
+
+def get_all_suppliers() -> list[dict]:
+    """모든 공급처 목록을 반환합니다."""
+    sql = "SELECT id, biz_no, name, ceo_name FROM suppliers ORDER BY name ASC"
+    rows = query_all(sql)
+    return [{'id': r[0], 'biz_no': r[1], 'name': r[2], 'ceo_name': r[3]} for r in rows]
 
 def add_or_update_supplier(data: dict) -> int:
     """공급처 정보를 추가하거나 업데이트합니다."""
@@ -6903,15 +6944,20 @@ def add_or_update_supplier(data: dict) -> int:
     try:
         cur = conn.cursor()
         cur.execute("""
-            INSERT INTO suppliers (biz_no, name, ceo_name, contact, address, updated_at)
-            VALUES (?, ?, ?, ?, ?, datetime('now','localtime'))
+            INSERT INTO suppliers (biz_no, name, ceo_name, biz_type, biz_item, contact, email, address, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
             ON CONFLICT(name) DO UPDATE SET
                 biz_no = excluded.biz_no,
                 ceo_name = excluded.ceo_name,
+                biz_type = excluded.biz_type,
+                biz_item = excluded.biz_item,
                 contact = excluded.contact,
+                email = excluded.email,
                 address = excluded.address,
                 updated_at = datetime('now','localtime')
-        """, (data.get('biz_no'), data['name'], data.get('ceo_name'), data.get('contact'), data.get('address')))
+        """, (data.get('biz_no'), data['name'], data.get('ceo_name'), 
+              data.get('biz_type'), data.get('biz_item'),
+              data.get('contact'), data.get('email'), data.get('address')))
         # INSERT 또는 UPDATE 이후 확실하게 ID를 가져옴
         cur.execute("SELECT id FROM suppliers WHERE name = ?", (data['name'],))
         row = cur.fetchone()
@@ -6958,6 +7004,10 @@ def add_purchase_tax_invoice(invoice_data: dict, purchase_ids: list[int] = None)
             total = supply + tax
 
         invoice_id = invoice_data.get('id')
+        approval_number = invoice_data.get('approval_number')
+        if approval_number == "":
+            approval_number = None
+
         if invoice_id:
             cur.execute("""
                 UPDATE purchase_tax_invoices SET
@@ -6966,7 +7016,7 @@ def add_purchase_tax_invoice(invoice_data: dict, purchase_ids: list[int] = None)
                     approval_number = ?, note = ?, updated_at = datetime('now','localtime')
                 WHERE id = ?
             """, (invoice_data['issue_date'], invoice_data['supplier_id'], total, supply, tax,
-                  invoice_data.get('approval_number'), invoice_data.get('note'), invoice_id))
+                  approval_number, invoice_data.get('note'), invoice_id))
             if purchase_ids is not None:
                 cur.execute("DELETE FROM purchase_invoice_links WHERE tax_invoice_id = ?", (invoice_id,))
                 for pid in purchase_ids:
@@ -6976,7 +7026,7 @@ def add_purchase_tax_invoice(invoice_data: dict, purchase_ids: list[int] = None)
                 INSERT INTO purchase_tax_invoices (issue_date, supplier_id, total_amount, supply_amount, tax_amount, approval_number, note)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (invoice_data['issue_date'], invoice_data['supplier_id'], total, supply, tax,
-                  invoice_data.get('approval_number'), invoice_data.get('note')))
+                  approval_number, invoice_data.get('note')))
             invoice_id = cur.lastrowid
             if purchase_ids:
                 for pid in purchase_ids:
@@ -7355,8 +7405,10 @@ def get_tax_invoice_detail(invoice_id):
 def get_all_tax_invoices(start_date=None, end_date=None):
     """기간별 모든 세금계산서를 조회합니다."""
     sql = """
-        SELECT inv.id, inv.issue_date, s.name, inv.total_amount, inv.note, 
-               (SELECT COUNT(*) FROM purchase_tax_invoice_items WHERE tax_invoice_id = inv.id) as item_count
+        SELECT inv.id, inv.issue_date, s.biz_no, s.name, s.ceo_name, 
+               inv.supply_amount, inv.tax_amount, inv.total_amount, 
+               (SELECT COUNT(*) FROM purchase_tax_invoice_items WHERE tax_invoice_id = inv.id) as item_count,
+               inv.note
         FROM purchase_tax_invoices inv
         JOIN suppliers s ON inv.supplier_id = s.id
     """
