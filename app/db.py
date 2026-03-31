@@ -3900,7 +3900,9 @@ def is_purchase_completed(purchase_id: int) -> bool:
 
                 (SELECT COUNT(*) FROM products pr WHERE pr.purchase_id = p.id AND (pr.delivery_id IS NOT NULL OR pr.delivered_at IS NOT NULL)) as delivered_qty,
 
-                (SELECT COUNT(*) FROM products pr WHERE pr.purchase_id = p.id AND pr.consumed_by_product_id IS NOT NULL) as consumed_qty
+                (SELECT COUNT(*) FROM products pr WHERE pr.purchase_id = p.id AND pr.consumed_by_product_id IS NOT NULL) as consumed_qty,
+
+                p.purchase_dt  -- 날짜 필드 추가
 
             FROM purchases p
 
@@ -3918,6 +3920,8 @@ def is_purchase_completed(purchase_id: int) -> bool:
 
         order_qty, produced_qty, delivered_qty, consumed_qty = 0, 0, 0, 0
 
+        purchase_dt = ""
+
         if qty_result:
 
             # None??0?쇰줈 泥섎━
@@ -3930,11 +3934,29 @@ def is_purchase_completed(purchase_id: int) -> bool:
 
             consumed_qty = qty_result[3] or 0
 
+            purchase_dt = qty_result[4] or ""
+
 
 
         # --- 議곌굔 2: (?ш퀬 ?좊Т) ?ш퀬媛 ?⑥븘?덉쑝硫?臾댁“嫄?誘몄셿猷?---
 
         # (?앹궛?? - (?⑺뭹?? - (?뚮え?? > 0 ?대㈃ ?ш퀬媛 ?덈뒗 寃?
+
+        # --- [신규] 議곌굔 2-1: 2026년 이후 건에 대한 지불 상태 체크 ---
+
+        # 사용자가 수동 완료한 경우는 이미 위에서 리턴되었으므로, 자동 판정 시에만 적용
+
+        if purchase_dt and purchase_dt >= '2026-01-01':
+
+            # 지불 상태 조회 함수 호출
+
+            pay_info = get_purchase_payment_status_for_po(purchase_id)
+
+            if pay_info['status'] != '지불완료':
+
+                return False  # 지불 미완료 시 즉시 미완료 반환
+
+
 
         if produced_qty > (delivered_qty + consumed_qty):
 
