@@ -525,7 +525,45 @@ class ProductWidget(QtWidgets.QWidget):
 
         header.sectionResized.connect(self.save_column_widths)
 
+        # ✅ 검색 영역 추가
+        self.search_group = QtWidgets.QGroupBox("검색 필터")
+        search_main_layout = QtWidgets.QHBoxLayout(self.search_group)
+        search_main_layout.setContentsMargins(10, 6, 10, 6)
+        search_main_layout.setSpacing(10)
+
+        # 1. 품명 검색
+        self.search_name_edit = QLineEdit()
+        self.search_name_edit.setPlaceholderText("품명 검색...")
+        self.search_name_edit.returnPressed.connect(self.load_product_list)
+        
+        # 2. 품목코드 검색
+        self.search_code_edit = QLineEdit()
+        self.search_code_edit.setPlaceholderText("품목코드 검색...")
+        self.search_code_edit.returnPressed.connect(self.load_product_list)
+        
+        # 3. 시리얼 번호 검색
+        self.search_sn_edit = QLineEdit()
+        self.search_sn_edit.setPlaceholderText("시리얼 번호 검색...")
+        self.search_sn_edit.returnPressed.connect(self.load_product_list)
+
+        search_main_layout.addWidget(QtWidgets.QLabel("품명:"))
+        search_main_layout.addWidget(self.search_name_edit, 2)
+        search_main_layout.addWidget(QtWidgets.QLabel("품목코드:"))
+        search_main_layout.addWidget(self.search_code_edit, 1)
+        search_main_layout.addWidget(QtWidgets.QLabel("시리얼:"))
+        search_main_layout.addWidget(self.search_sn_edit, 1)
+
+        self.btn_search = QtWidgets.QPushButton("검색")
+        self.btn_search.clicked.connect(self.load_product_list)
+        self.btn_search.setStyleSheet("color: #0066cc; font-weight: bold;")
+        search_main_layout.addWidget(self.btn_search)
+
+        self.btn_clear_search = QtWidgets.QPushButton("초기화")
+        self.btn_clear_search.clicked.connect(self.clear_search)
+        search_main_layout.addWidget(self.btn_clear_search)
+
         layout.addLayout(title_layout)
+        layout.addWidget(self.search_group)
         layout.addWidget(self.tree)
 
         apply_table_resize_policy(self.tree)
@@ -541,6 +579,13 @@ class ProductWidget(QtWidgets.QWidget):
         """미납품/전체 보기 토글"""
         self.show_all_products = checked
         self.btn_show_all_products.setText("전체보기" if checked else "미납품만")
+        self.load_product_list()
+
+    def clear_search(self):
+        """(새 함수) 검색 조건 초기화"""
+        self.search_name_edit.clear()
+        self.search_code_edit.clear()
+        self.search_sn_edit.clear()
         self.load_product_list()
 
     def on_item_expanded(self, item):
@@ -852,10 +897,31 @@ class ProductWidget(QtWidgets.QWidget):
                 LEFT JOIN deliveries d ON pr.delivery_id = d.id
             """
 
+            # ✅ 검색 필터 적용
+            params = []
+            where_clauses = []
+            
+            name_query = self.search_name_edit.text().strip()
+            code_query = self.search_code_edit.text().strip()
+            sn_query = self.search_sn_edit.text().strip()
+            
+            if name_query:
+                where_clauses.append("pr.product_name LIKE ?")
+                params.append(f"%{name_query}%")
+            if code_query:
+                where_clauses.append("pr.part_no LIKE ?")
+                params.append(f"%{code_query}%")
+            if sn_query:
+                where_clauses.append("pr.serial_no LIKE ?")
+                params.append(f"%{sn_query}%")
+                
+            if where_clauses:
+                sql += " WHERE " + " AND ".join(where_clauses)
+
             order_clause = self.get_product_order_clause()
             sql += f" ORDER BY {order_clause}"
 
-            cur.execute(sql)
+            cur.execute(sql, tuple(params))
             rows = cur.fetchall()
 
             # (그룹화)

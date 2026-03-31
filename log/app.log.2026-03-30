@@ -1,0 +1,50 @@
+2026-03-30 20:47:39,731 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-30 20:47:45,362 [INFO] Main Window icon explicitly set from resource.
+2026-03-30 20:56:10,678 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-30 20:56:13,533 [INFO] Main Window icon explicitly set from resource.
+2026-03-30 21:00:23,781 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-30 21:00:26,486 [INFO] Main Window icon explicitly set from resource.
+2026-03-30 21:04:08,639 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-30 21:04:11,443 [INFO] Main Window icon explicitly set from resource.
+2026-03-30 21:14:23,055 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-30 21:14:25,913 [INFO] Main Window icon explicitly set from resource.
+2026-03-30 21:14:42,842 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\tax_invoice_item_dialog.py", line 468, in on_purchase_changed
+    invoiced_ids = get_invoiced_item_ids_for_po(purchase_id)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\db.py", line 7351, in get_invoiced_item_ids_for_po
+    rows = query_all(sql, (purchase_id,))
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\db.py", line 1390, in query_all
+    cur = conn.execute(sql, params)
+sqlite3.OperationalError: no such column: purchase_item_id
+
+2026-03-30 21:15:52,845 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\tax_invoice_item_dialog.py", line 468, in on_purchase_changed
+    invoiced_ids = get_invoiced_item_ids_for_po(purchase_id)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\db.py", line 7351, in get_invoiced_item_ids_for_po
+    rows = query_all(sql, (purchase_id,))
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\db.py", line 1390, in query_all
+    cur = conn.execute(sql, params)
+sqlite3.OperationalError: no such column: purchase_item_id
+
+2026-03-30 21:20:37,428 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-30 21:20:40,131 [INFO] Main Window icon explicitly set from resource.
+2026-03-30 21:21:13,472 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\tax_invoice_item_dialog.py", line 470, in on_purchase_changed
+    invoiced_ids = get_invoiced_item_ids_for_po(purchase_id)
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\db.py", line 7351, in get_invoiced_item_ids_for_po
+    rows = query_all(sql, (purchase_id,))
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\db.py", line 1390, in query_all
+    cur = conn.execute(sql, params)
+sqlite3.OperationalError: no such column: purchase_item_id
+
+2026-03-30 21:29:26,665 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-30 21:29:29,299 [INFO] Main Window icon explicitly set from resource.
+2026-03-30 21:32:46,462 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-30 21:32:49,149 [INFO] Main Window icon explicitly set from resource.
+2026-03-30 21:44:03,880 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-30 21:44:06,700 [INFO] Main Window icon explicitly set from resource.
+2026-03-30 21:51:15,352 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-30 21:51:18,260 [INFO] Main Window icon explicitly set from resource.
