@@ -7347,7 +7347,7 @@ def get_purchase_payment_summary(purchase_id):
     return get_purchase_payment_status_for_po(purchase_id)
 
 def get_tax_invoice_items(invoice_id):
-    """세금계산서의 상세 품목 리스트를 반환합니다. (지불 상태 포함)"""
+    """세금계산서의 상세 품목 리스트를 반환합니다. (현재 인보이스 내의 지불 상태 및 잔액 포함)"""
     sql = """
         SELECT id, item_name, spec, quantity, unit_price, supply_amount, tax_amount, purchase_id, purchase_no, note
         FROM purchase_tax_invoice_items
@@ -7356,20 +7356,56 @@ def get_tax_invoice_items(invoice_id):
     """
     rows = query_all(sql, (invoice_id,))
     
+    # 1. 해당 세금계산서의 총 지불액/청구액 확인
+    total_paid_sql = "SELECT COALESCE(SUM(amount), 0) FROM purchase_payments WHERE tax_invoice_id = ?"
+    total_invoice_paid = query_one(total_paid_sql, (invoice_id,))[0]
+
+    total_amt_sql = "SELECT total_amount FROM purchase_tax_invoices WHERE id = ?"
+    total_invoice_amt = query_one(total_amt_sql, (invoice_id,))[0]
+    
+    is_fully_paid = (total_invoice_paid >= total_invoice_amt and total_invoice_amt > 0)
+
+    # 2. PO별 지불액 합계 미리 로드 (특정 품목 지불 시 purchase_id가 기록됨)
+    pay_sql = """
+        SELECT purchase_id, SUM(amount) as paid_sum 
+        FROM purchase_payments 
+        WHERE tax_invoice_id = ?
+        GROUP BY purchase_id
+    """
+    pay_rows = query_all(pay_sql, (invoice_id,))
+    po_paid_map = {r[0]: r[1] for r in pay_rows}
+
     items = []
     for r in rows:
+        item_total = r[5] + r[6]
         item = {
             'id': r[0], 'item_name': r[1], 'spec': r[2], 'quantity': r[3],
             'unit_price': r[4], 'supply_amount': r[5], 'tax_amount': r[6],
-            'purchase_id': r[7], 'purchase_no': r[8], 'note': r[9]
+            'purchase_id': r[7], 'purchase_no': r[8], 'note': r[9],
+            'total': item_total
         }
-        # 각 품목별 PO의 지불 상태 계산 (PO가 있는 경우)
-        if item['purchase_id']:
-            from .db import get_purchase_payment_status_for_po # 순환 참조 방지
-            pay_info = get_purchase_payment_status_for_po(item['purchase_id'])
-            item['po_status'] = pay_info['status'] # '미지불', '부분지불', '지불완료'
+        
+        # 지불 상태 및 잔액 결정 (인보이스 전체 완납 시 우선 처리)
+        if is_fully_paid:
+            item['po_status'] = "지불완료"
+            item['balance'] = 0
         else:
-            item['po_status'] = "-"
+            # PO별 지불 항목 매칭
+            po_paid = po_paid_map.get(item['purchase_id'], 0)
+            if po_paid > 0:
+                # 해당 PO의 이 인보이스 내 전체 합계 계산
+                po_total_in_inv = sum(row[5] + row[6] for row in rows if row[7] == item['purchase_id'])
+                
+                if po_paid >= po_total_in_inv:
+                    item['po_status'] = "지불완료"
+                    item['balance'] = 0
+                else:
+                    item['po_status'] = "부분지불"
+                    ratio = po_paid / po_total_in_inv
+                    item['balance'] = max(0, item_total - round(item_total * ratio))
+            else:
+                item['po_status'] = "미지불"
+                item['balance'] = item_total
             
         items.append(item)
     return items

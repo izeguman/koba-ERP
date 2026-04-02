@@ -342,7 +342,7 @@ class TaxInvoiceDetailDialog(QtWidgets.QDialog):
         
         self.items_table = QtWidgets.QTableWidget(len(self.detail['items']), 9)
         self.items_table.setHorizontalHeaderLabels([
-            "품목", "규격", "수량", "단가", "공급가액", "세액", "연결 발주서", "지불상태", "비고"
+            "품목", "규격", "수량", "단가", "공급가액", "세액", "연결 발주서", "지불상태", "지불 잔액"
         ])
         self.items_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.items_table.setAlternatingRowColors(True)
@@ -370,7 +370,7 @@ class TaxInvoiceDetailDialog(QtWidgets.QDialog):
             
             self.items_table.setItem(row, 6, QtWidgets.QTableWidgetItem(item.get('purchase_no', "-") or "-"))
             
-            # --- 지불 상태 컬럼 (NEW) ---
+            # --- 지불 상태 컬럼 ---
             po_status = item.get('po_status', '-')
             status_item = QtWidgets.QTableWidgetItem(po_status)
             status_item.setTextAlignment(Qt.AlignCenter)
@@ -382,7 +382,15 @@ class TaxInvoiceDetailDialog(QtWidgets.QDialog):
                 status_item.setForeground(QtGui.QColor("#dc3545"))
             self.items_table.setItem(row, 7, status_item)
             
-            self.items_table.setItem(row, 8, QtWidgets.QTableWidgetItem(item.get('note', "") or ""))
+            # --- 지불 잔액 컬럼 (구 비고) ---
+            balance = item.get('balance', 0)
+            balance_item = QtWidgets.QTableWidgetItem(f"{format_money(balance)} 원")
+            balance_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            if balance == 0:
+                balance_item.setForeground(QtGui.QColor("#2E7D32"))
+            else:
+                balance_item.setForeground(QtGui.QColor("#dc3545"))
+            self.items_table.setItem(row, 8, balance_item)
         
         layout.addWidget(self.items_table, 3)
         
