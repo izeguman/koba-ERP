@@ -1,0 +1,36 @@
+2026-03-31 20:19:48,807 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-31 20:19:54,491 [INFO] Main Window icon explicitly set from resource.
+2026-03-31 20:27:50,734 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-31 20:27:59,281 [INFO] Main Window icon explicitly set from resource.
+2026-03-31 21:46:16,824 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-31 21:46:20,108 [INFO] Main Window icon explicitly set from resource.
+2026-03-31 21:52:58,350 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-31 21:53:00,999 [INFO] Main Window icon explicitly set from resource.
+2026-03-31 21:54:50,306 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-31 21:54:53,168 [INFO] Main Window icon explicitly set from resource.
+2026-03-31 22:04:06,868 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-31 22:04:09,654 [INFO] Main Window icon explicitly set from resource.
+2026-03-31 22:07:13,984 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\tax_invoice_item_dialog.py", line 591, in select_from_purchase_items
+    if all_items:
+       ^^^^^^^^^
+UnboundLocalError: cannot access local variable 'all_items' where it is not associated with a value
+
+2026-03-31 22:07:14,719 [CRITICAL] Uncaught exception:
+Traceback (most recent call last):
+  File "c:\Users\kobat\OneDrive\Product_Management_System\app\ui\tax_invoice_item_dialog.py", line 591, in select_from_purchase_items
+    if all_items:
+       ^^^^^^^^^
+UnboundLocalError: cannot access local variable 'all_items' where it is not associated with a value
+
+2026-03-31 22:08:04,770 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-31 22:08:07,621 [INFO] Main Window icon explicitly set from resource.
+2026-03-31 22:16:17,437 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-31 22:16:21,008 [INFO] Main Window icon explicitly set from resource.
+2026-03-31 22:16:56,292 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-31 22:16:59,554 [INFO] Main Window icon explicitly set from resource.
+2026-03-31 22:21:07,598 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-31 22:21:10,506 [INFO] Main Window icon explicitly set from resource.
+2026-03-31 22:21:56,539 [INFO] === Application Started (Retention: 30 days) ===
+2026-03-31 22:21:59,333 [INFO] Main Window icon explicitly set from resource.

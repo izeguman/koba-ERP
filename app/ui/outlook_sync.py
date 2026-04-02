@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QProgressDialog, QApplication
 from pathlib import Path
 from datetime import datetime, date
 import time  # ✅ 안정화를 위한 time 모듈 import
+import re  # ✅ 정규식 사용을 위한 import 추가
 
 # ─────────────────────────────────────────────────────────────
 # 1. 설정 및 별칭 매핑
@@ -321,6 +322,8 @@ def sync_outlook_tasks(future_only=False, progress_callback=None):
     # 1. 아웃룩 스캔 및 불필요 항목 삭제
     update_progress(current_step, "기존 항목 스캔 및 정리 중...")
     
+    kept_tasks = set() # ✅ 중복 일정을 걸러내기 위한 세트
+    
     items_count = tasks_folder.Items.Count
     for i in range(items_count, 0, -1):
         try:
@@ -332,7 +335,18 @@ def sync_outlook_tasks(future_only=False, progress_callback=None):
             if not hasattr(task, 'Subject') or task.Complete: continue
 
             if "ORD-" in task.Subject or "주문번호:" in task.Body:
-                task_date = _to_local_date(task.DueDate)
+                task_date = None
+                try:
+                    if task.Body:
+                        match = re.search(r'납품일:\s*(\d{4}-\d{2}-\d{2})', task.Body)
+                        if match:
+                            task_date = datetime.strptime(match.group(1), '%Y-%m-%d').date()
+                except Exception as e:
+                    logger.warning(f"Body 날짜 파싱 오류: {e}")
+                    pass
+                    
+                if not task_date:
+                    task_date = _to_local_date(task.DueDate)
 
                 # 미래 동기화 모드면 과거 일정은 건너뜀
                 if future_only and task_date < today_date:
@@ -345,6 +359,16 @@ def sync_outlook_tasks(future_only=False, progress_callback=None):
                     deleted_items_log.append(f"{subject} ({task_date})")
                     logger.info(f"[DELETE] 항목 삭제됨: {subject} (Due: {task_date})")
                     time.sleep(0.1) # ✅ 삭제 안정화 대기 (0.02 -> 0.1로 증가)
+                elif (task.Subject, task_date) in kept_tasks:
+                    # ✅ 이미 유지하기로 한 일정과 완벽히 동일한 경우 추가(중복)로 판단하여 삭제
+                    subject = task.Subject
+                    task.Delete()
+                    cnt_delete += 1
+                    deleted_items_log.append(f"{subject} ({task_date}) [중복 삭제]")
+                    logger.info(f"[DELETE] 중복 항목 삭제됨: {subject} (Due: {task_date})")
+                    time.sleep(0.1)
+                else:
+                    kept_tasks.add((task.Subject, task_date))
         except Exception as e:
             logger.warning(f"항목 스캔/삭제 중 오류: {e}")
             pass
@@ -355,11 +379,19 @@ def sync_outlook_tasks(future_only=False, progress_callback=None):
     # 2. 신규 등록 및 업데이트
     new_items_log = [] # 디버깅용: 새로 추가된 항목들
     
-    for idx, item in enumerate(active_data):
+    unique_active_data = [] # ✅ 중복 데이터에 의한 생성 방어
+    seen_db_tasks = set()
+    for item in active_data:
+        key = (item['subject'], item['due_date'])
+        if key not in seen_db_tasks:
+            seen_db_tasks.add(key)
+            unique_active_data.append(item)
+
+    for idx, item in enumerate(unique_active_data):
         current_step += 1
         # ✅ 매 항목마다 프로그래스 업데이트 (부드러운 진행)
         if idx % 1 == 0: 
-             update_progress(current_step, f"데이터 동기화 중 ({idx+1}/{len(active_data)})...")
+             update_progress(current_step, f"데이터 동기화 중 ({idx+1}/{len(unique_active_data)})...")
              
         subject = item['subject']
         body = item['full_body']
@@ -374,9 +406,24 @@ def sync_outlook_tasks(future_only=False, progress_callback=None):
         found = None
         # 효율성을 위해 필터링 사용 권장하지만, 현재 구조 유지 시 루프
         for task in tasks_folder.Items:
-            if not task.Complete and task.Subject == subject and _to_local_date(task.DueDate) == due_date.date():
-                found = task
-                break
+            if getattr(task, 'Complete', True): continue
+            
+            if task.Subject == subject:
+                t_date = None
+                try:
+                    if task.Body:
+                        m = re.search(r'납품일:\s*(\d{4}-\d{2}-\d{2})', task.Body)
+                        if m:
+                            t_date = datetime.strptime(m.group(1), '%Y-%m-%d').date()
+                except:
+                    pass
+                
+                if not t_date:
+                    t_date = _to_local_date(task.DueDate)
+                
+                if t_date == due_date.date():
+                    found = task
+                    break
 
         if found:
             if found.Body.strip() != body.strip():
