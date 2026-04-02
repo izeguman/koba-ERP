@@ -1,8 +1,8 @@
 """
 세금계산서 관리 위젯
-독립적인 세금계산서 관리 (여러 발주 포함 가능)
+독립적인 세금계산서 관리 (지불 현황 및 상세 조회 강화 버전)
 """
-from PySide6 import QtWidgets, QtCore
+from PySide6 import QtWidgets, QtCore, QtGui
 from PySide6.QtCore import Qt
 from datetime import datetime, timedelta
 from ..db import (
@@ -76,14 +76,14 @@ class TaxInvoiceWidget(QtWidgets.QWidget):
         
         layout.addLayout(filter_layout)
         
-        # 중간: 테이블
-        self.table = QtWidgets.QTableWidget(0, 10)
+        # 중간: 테이블 (컬럼 10개 -> 11개로 확장)
+        self.table = QtWidgets.QTableWidget(0, 11)
         self.table.setHorizontalHeaderLabels([
-            "발행일", "사업자등록번호", "공급자", "대표자명", "공급가액", "세액", "총액", "품목수", "비고", "ID"
+            "발행일", "사업자등록번호", "공급자", "대표자명", "공급가액", "세액", "총액", "지불상태", "품목수", "비고", "ID"
         ])
-        self.table.setColumnHidden(9, True)  # ID 숨김
+        self.table.setColumnHidden(10, True)  # ID 숨김
         
-        # 컬럼 너비
+        # 컬럼 너비 설정
         self.table.setColumnWidth(0, 90)   # 발행일
         self.table.setColumnWidth(1, 120)  # 사업자번호
         self.table.setColumnWidth(2, 150)  # 공급자
@@ -91,17 +91,17 @@ class TaxInvoiceWidget(QtWidgets.QWidget):
         self.table.setColumnWidth(4, 110)  # 공급가액
         self.table.setColumnWidth(5, 100)  # 세액
         self.table.setColumnWidth(6, 120)  # 총액
-        self.table.setColumnWidth(7, 70)   # 품목수
-        self.table.setColumnWidth(8, 200)  # 비고
+        self.table.setColumnWidth(7, 100)  # 지불상태 (NEW)
+        self.table.setColumnWidth(8, 70)   # 품목수
+        self.table.setColumnWidth(9, 200)  # 비고
         
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.show_context_menu)
-        self.table.doubleClicked.connect(self.edit_invoice)
+        self.table.doubleClicked.connect(self.view_invoice_details) # 더블클릭 시 바로 상세 보기
         
-        # 컬럼 너비 변경 시 자동 저장 연결
         self.table.horizontalHeader().sectionResized.connect(self.save_column_widths)
         
         layout.addWidget(self.table)
@@ -112,11 +112,11 @@ class TaxInvoiceWidget(QtWidgets.QWidget):
         btn_add = QtWidgets.QPushButton("+ 세금계산서 등록")
         btn_add.clicked.connect(self.add_invoice)
         
+        btn_view = QtWidgets.QPushButton("🔍 상세보기")
+        btn_view.clicked.connect(self.view_invoice_details)
+        
         btn_edit = QtWidgets.QPushButton("수정")
         btn_edit.clicked.connect(self.edit_invoice)
-        
-        btn_view = QtWidgets.QPushButton("상세보기")
-        btn_view.clicked.connect(self.view_invoice_details)
         
         btn_delete = QtWidgets.QPushButton("삭제")
         btn_delete.clicked.connect(self.delete_invoice)
@@ -125,8 +125,8 @@ class TaxInvoiceWidget(QtWidgets.QWidget):
         btn_suppliers.clicked.connect(self.open_supplier_manager)
         
         btn_layout.addWidget(btn_add)
-        btn_layout.addWidget(btn_edit)
         btn_layout.addWidget(btn_view)
+        btn_layout.addWidget(btn_edit)
         btn_layout.addWidget(btn_delete)
         btn_layout.addSpacing(20)
         btn_layout.addWidget(btn_suppliers)
@@ -135,7 +135,7 @@ class TaxInvoiceWidget(QtWidgets.QWidget):
         layout.addLayout(btn_layout)
         
     def load_data(self):
-        """세금계산서 목록 로드"""
+        """세금계산서 목록 로드 (지불 상태 포함)"""
         start_date = self.start_date_edit.date().toString("yyyy-MM-dd")
         end_date = self.end_date_edit.date().toString("yyyy-MM-dd")
         
@@ -143,9 +143,12 @@ class TaxInvoiceWidget(QtWidgets.QWidget):
         
         self.table.setRowCount(0)
         for invoice in invoices:
-            # id(0), issue_date(1), biz_no(2), name(3), ceo_name(4), supply(5), tax(6), total(7), count(8), note(9)
+            # id(0), issue_date(1), biz_no(2), name(3), ceo_name(4), supply(5), tax(6), total(7), count(8), note(9), paid_amount(10)
             row = self.table.rowCount()
             self.table.insertRow(row)
+            
+            total_amt = invoice[7] or 0
+            paid_amt = invoice[10] or 0
             
             self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(invoice[1] or ""))
             self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(invoice[2] or ""))
@@ -153,32 +156,54 @@ class TaxInvoiceWidget(QtWidgets.QWidget):
             self.table.setItem(row, 3, QtWidgets.QTableWidgetItem(invoice[4] or ""))
             self.table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{format_money(invoice[5])} 원"))
             self.table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{format_money(invoice[6])} 원"))
-            self.table.setItem(row, 6, QtWidgets.QTableWidgetItem(f"{format_money(invoice[7])} 원"))
-            self.table.setItem(row, 7, QtWidgets.QTableWidgetItem(str(invoice[8])))
-            self.table.setItem(row, 8, QtWidgets.QTableWidgetItem(invoice[9] or ""))
+            
+            # 총액
+            total_item = QtWidgets.QTableWidgetItem(f"{format_money(total_amt)} 원")
+            total_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.table.setItem(row, 6, total_item)
+            
+            # 지불상태 결정
+            if paid_amt <= 0:
+                status = "미지불"
+                color = "#dc3545" # Red
+            elif paid_amt >= total_amt:
+                status = "지불완료"
+                color = "#2E7D32" # Green
+            else:
+                status = f"부분지불"
+                color = "#EF6C00" # Orange
+            
+            status_item = QtWidgets.QTableWidgetItem(status)
+            status_item.setTextAlignment(Qt.AlignCenter)
+            status_item.setForeground(QtGui.QColor(color))
+            self.table.setItem(row, 7, status_item)
+            
+            self.table.setItem(row, 8, QtWidgets.QTableWidgetItem(str(invoice[8])))
+            self.table.setItem(row, 9, QtWidgets.QTableWidgetItem(invoice[9] or ""))
             
             # ID 저장
             id_item = QtWidgets.QTableWidgetItem(str(invoice[0]))
             id_item.setData(Qt.UserRole, invoice[0])
-            self.table.setItem(row, 9, id_item)
+            self.table.setItem(row, 10, id_item)
             
     def show_context_menu(self, position):
         """컨텍스트 메뉴"""
         menu = QtWidgets.QMenu(self)
         
-        add_action = menu.addAction("세금계산서 등록")
-        add_action.triggered.connect(self.add_invoice)
-        
         if self.table.currentRow() >= 0:
+            view_action = menu.addAction("🔍 상세보기")
+            view_action.triggered.connect(self.view_invoice_details)
             menu.addSeparator()
+            
             edit_action = menu.addAction("수정")
             edit_action.triggered.connect(self.edit_invoice)
             
-            view_action = menu.addAction("상세보기")
-            view_action.triggered.connect(self.view_invoice_details)
-            
             delete_action = menu.addAction("삭제")
             delete_action.triggered.connect(self.delete_invoice)
+            menu.addSeparator()
+
+        add_action = menu.addAction("세금계산서 등록")
+        add_action.triggered.connect(self.add_invoice)
         
         menu.exec(self.table.viewport().mapToGlobal(position))
         
@@ -195,19 +220,18 @@ class TaxInvoiceWidget(QtWidgets.QWidget):
             QtWidgets.QMessageBox.warning(self, "경고", "수정할 세금계산서를 선택해주세요.")
             return
         
-        invoice_id = self.table.item(current_row, 9).data(Qt.UserRole)
+        invoice_id = self.table.item(current_row, 10).data(Qt.UserRole)
         dialog = TaxInvoiceItemDialog(purchase_id=None, invoice_id=invoice_id, parent=self)
         if dialog.exec():
             self.load_data()
             
     def view_invoice_details(self):
-        """세금계산서 상세보기"""
+        """세금계산서 상세보기 (고도화된 다이얼로그)"""
         current_row = self.table.currentRow()
         if current_row < 0:
-            QtWidgets.QMessageBox.warning(self, "경고", "세금계산서를 선택해주세요.")
             return
         
-        invoice_id = self.table.item(current_row, 9).data(Qt.UserRole)
+        invoice_id = self.table.item(current_row, 10).data(Qt.UserRole)
         detail = get_tax_invoice_detail(invoice_id)
         
         if not detail:
@@ -216,7 +240,8 @@ class TaxInvoiceWidget(QtWidgets.QWidget):
         
         # 상세보기 다이얼로그
         dialog = TaxInvoiceDetailDialog(detail, self)
-        dialog.exec()
+        if dialog.exec() == QtWidgets.QDialog.Accepted:
+            self.load_data() # 지불 등이 이루어졌을 수 있으므로 갱신
         
     def delete_invoice(self):
         """세금계산서 삭제"""
@@ -225,7 +250,7 @@ class TaxInvoiceWidget(QtWidgets.QWidget):
             QtWidgets.QMessageBox.warning(self, "경고", "삭제할 세금계산서를 선택해주세요.")
             return
         
-        invoice_id = self.table.item(current_row, 9).data(Qt.UserRole)
+        invoice_id = self.table.item(current_row, 10).data(Qt.UserRole)
         
         reply = QtWidgets.QMessageBox.question(
             self, "확인",
@@ -237,7 +262,6 @@ class TaxInvoiceWidget(QtWidgets.QWidget):
             try:
                 delete_tax_invoice(invoice_id)
                 self.load_data()
-                QtWidgets.QMessageBox.information(self, "완료", "세금계산서가 삭제되었습니다.")
             except Exception as e:
                 QtWidgets.QMessageBox.critical(self, "오류", f"삭제 실패:\n{str(e)}")
 
@@ -249,17 +273,16 @@ class TaxInvoiceWidget(QtWidgets.QWidget):
 
 
 class TaxInvoiceDetailDialog(QtWidgets.QDialog):
-    """세금계산서 상세보기 다이얼로그"""
+    """세금계산서 상세보기 다이얼로그 (고도화 버전)"""
     
     def __init__(self, detail, parent=None):
         super().__init__(parent)
         self.detail = detail
         self.settings = QtCore.QSettings("KOBATECH", "ProductManager")
-        self.items_table = None
         
-        self.setWindowTitle("세금계산서 상세")
-        self.setMinimumWidth(800)
-        self.setMinimumHeight(500)
+        self.setWindowTitle(f"세금계산서 상세 - {self.detail['supplier_name']} ({self.detail['issue_date']})")
+        self.setMinimumWidth(900)
+        self.setMinimumHeight(700)
         
         self.setup_ui()
         self.restore_column_widths()
@@ -267,82 +290,179 @@ class TaxInvoiceDetailDialog(QtWidgets.QDialog):
     def setup_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
         
-        # 기본 정보
-        info_group = QtWidgets.QGroupBox("기본 정보")
-        info_layout = QtWidgets.QFormLayout(info_group)
+        # --- 1. 상단 정보 요약 섹션 ---
+        header_layout = QtWidgets.QHBoxLayout()
         
-        info_layout.addRow("발행일:", QtWidgets.QLabel(self.detail['issue_date']))
-        info_layout.addRow("공급자:", QtWidgets.QLabel(self.detail['supplier_name']))
-        info_layout.addRow("총액:", QtWidgets.QLabel(f"{format_money(self.detail['total_amount'])} 원"))
-        if self.detail['note']:
-            info_layout.addRow("비고:", QtWidgets.QLabel(self.detail['note']))
+        basic_group = QtWidgets.QGroupBox("📄 기본 정보")
+        basic_form = QtWidgets.QFormLayout(basic_group)
+        basic_form.addRow("발행일:", QtWidgets.QLabel(f"<b>{self.detail['issue_date']}</b>"))
+        basic_form.addRow("공급자:", QtWidgets.QLabel(f"<b>{self.detail['supplier_name']}</b>"))
+        basic_form.addRow("승인번호:", QtWidgets.QLabel(self.detail.get('approval_number') or "-"))
+        if self.detail.get('note'):
+            basic_form.addRow("계산서 비고:", QtWidgets.QLabel(self.detail['note']))
+        header_layout.addWidget(basic_group, 1)
         
-        layout.addWidget(info_group)
+        # 💰 지불 요약 정보
+        total_amt = self.detail['total_amount'] or 0
+        payments = self.detail.get('payments', [])
+        paid_amt = sum(p['amount'] for p in payments)
+        balance = total_amt - paid_amt
         
-        # 품목 목록
-        items_label = QtWidgets.QLabel("📋 품목 내역")
-        items_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #007bff;")
+        payment_summary_group = QtWidgets.QGroupBox("💰 지불 현황")
+        payment_form = QtWidgets.QFormLayout(payment_summary_group)
+        
+        lbl_total = QtWidgets.QLabel(f"{format_money(total_amt)} 원")
+        lbl_total.setStyleSheet("font-weight: bold;")
+        
+        lbl_paid = QtWidgets.QLabel(f"{format_money(paid_amt)} 원")
+        lbl_paid.setStyleSheet("color: #2E7D32; font-weight: bold;")
+        
+        lbl_balance = QtWidgets.QLabel(f"{format_money(balance)} 원")
+        lbl_balance.setStyleSheet(f"color: {'#dc3545' if balance > 0 else '#2E7D32'}; font-size: 14px; font-weight: bold;")
+        
+        payment_form.addRow("계산서 총액:", lbl_total)
+        payment_form.addRow("총 지불 완료액:", lbl_paid)
+        payment_form.addRow("미지불 잔액:", lbl_balance)
+        
+        status_text = "미발행" if total_amt == 0 else ("완납" if balance <= 0 else "미납/부분지불")
+        status_color = "#2E7D32" if balance <= 0 else "#dc3545"
+        lbl_status = QtWidgets.QLabel(status_text)
+        lbl_status.setStyleSheet(f"color: white; background-color: {status_color}; padding: 3px 10px; border-radius: 5px; font-weight: bold;")
+        lbl_status.setAlignment(Qt.AlignCenter)
+        payment_form.addRow("정산 상태:", lbl_status)
+        
+        header_layout.addWidget(payment_summary_group, 1)
+        layout.addLayout(header_layout)
+        
+        # --- 2. 품목 목록 섹션 ---
+        layout.addSpacing(10)
+        items_label = QtWidgets.QLabel("📋 포함 품목 명세")
+        items_label.setStyleSheet("font-size: 13px; font-weight: bold; color: #0d6efd;")
         layout.addWidget(items_label)
         
-        self.items_table = QtWidgets.QTableWidget(len(self.detail['items']), 8)
+        self.items_table = QtWidgets.QTableWidget(len(self.detail['items']), 9)
         self.items_table.setHorizontalHeaderLabels([
-            "품목", "규격", "수량", "단가", "공급가액", "세액", "발주번호", "비고"
+            "품목", "규격", "수량", "단가", "공급가액", "세액", "연결 발주서", "지불상태", "비고"
         ])
         self.items_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.items_table.setAlternatingRowColors(True)
+        self.items_table.verticalHeader().setVisible(False)
         
         for row, item in enumerate(self.detail['items']):
-            # id, item_name, spec, quantity, unit_price, supply_amount, tax_amount, purchase_id, purchase_no
             self.items_table.setItem(row, 0, QtWidgets.QTableWidgetItem(item['item_name'] or ""))
             self.items_table.setItem(row, 1, QtWidgets.QTableWidgetItem(item.get('spec', "") or ""))
-            self.items_table.setItem(row, 2, QtWidgets.QTableWidgetItem(str(item.get('quantity', 1))))
-            self.items_table.setItem(row, 3, QtWidgets.QTableWidgetItem(format_money(item.get('unit_price', 0))))
-            self.items_table.setItem(row, 4, QtWidgets.QTableWidgetItem(format_money(item['supply_amount'])))
-            self.items_table.setItem(row, 5, QtWidgets.QTableWidgetItem(format_money(item['tax_amount'])))
+            
+            qty_item = QtWidgets.QTableWidgetItem(f"{item.get('quantity', 0):,}")
+            qty_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.items_table.setItem(row, 2, qty_item)
+            
+            price_item = QtWidgets.QTableWidgetItem(format_money(item.get('unit_price', 0)))
+            price_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.items_table.setItem(row, 3, price_item)
+            
+            supply_item = QtWidgets.QTableWidgetItem(format_money(item['supply_amount']))
+            supply_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.items_table.setItem(row, 4, supply_item)
+            
+            tax_item = QtWidgets.QTableWidgetItem(format_money(item['tax_amount']))
+            tax_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.items_table.setItem(row, 5, tax_item)
+            
             self.items_table.setItem(row, 6, QtWidgets.QTableWidgetItem(item.get('purchase_no', "-") or "-"))
-            self.items_table.setItem(row, 7, QtWidgets.QTableWidgetItem(item.get('note', "") or ""))
+            
+            # --- 지불 상태 컬럼 (NEW) ---
+            po_status = item.get('po_status', '-')
+            status_item = QtWidgets.QTableWidgetItem(po_status)
+            status_item.setTextAlignment(Qt.AlignCenter)
+            if po_status == '지불완료':
+                status_item.setForeground(QtGui.QColor("#2E7D32"))
+            elif po_status == '부분지불':
+                status_item.setForeground(QtGui.QColor("#EF6C00"))
+            elif po_status == '미지불':
+                status_item.setForeground(QtGui.QColor("#dc3545"))
+            self.items_table.setItem(row, 7, status_item)
+            
+            self.items_table.setItem(row, 8, QtWidgets.QTableWidgetItem(item.get('note', "") or ""))
         
-        layout.addWidget(self.items_table)
+        layout.addWidget(self.items_table, 3)
         
-        # 닫기 버튼
+        # --- 3. 지불 내역 히스토리 섹션 ---
+        layout.addSpacing(10)
+        pay_history_label = QtWidgets.QLabel("✔️ 지불 내역 히스토리")
+        pay_history_label.setStyleSheet("font-size: 13px; font-weight: bold; color: #198754;")
+        layout.addWidget(pay_history_label)
+        
+        self.pay_table = QtWidgets.QTableWidget(len(payments), 4)
+        self.pay_table.setHorizontalHeaderLabels(["지불일", "지불수단", "지불금액(원)", "비고"])
+        self.pay_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.pay_table.setAlternatingRowColors(True)
+        self.pay_table.verticalHeader().setVisible(False)
+        self.pay_table.horizontalHeader().setStretchLastSection(True)
+        
+        for row, p in enumerate(payments):
+            self.pay_table.setItem(row, 0, QtWidgets.QTableWidgetItem(p['payment_date']))
+            self.pay_table.setItem(row, 1, QtWidgets.QTableWidgetItem(p['payment_method']))
+            
+            amt_item = QtWidgets.QTableWidgetItem(format_money(p['amount']))
+            amt_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            amt_item.setForeground(QtGui.QColor("#2E7D32"))
+            self.pay_table.setItem(row, 2, amt_item)
+            
+            self.pay_table.setItem(row, 3, QtWidgets.QTableWidgetItem(p.get('note', "") or ""))
+            
+        if not payments:
+            self.pay_table.setRowCount(1)
+            self.pay_table.setItem(0, 0, QtWidgets.QTableWidgetItem("등록된 지불 내역이 없습니다."))
+            self.pay_table.setSpan(0, 0, 1, 4)
+            
+        layout.addWidget(self.pay_table, 2)
+        
+        # --- 하단 버튼 ---
+        btn_layout = QtWidgets.QHBoxLayout()
+        
+        btn_print = QtWidgets.QPushButton("인쇄 (준비중)")
+        btn_print.setEnabled(False)
+        
         btn_close = QtWidgets.QPushButton("닫기")
+        btn_close.setMinimumWidth(100)
         btn_close.clicked.connect(self.accept)
-        layout.addWidget(btn_close)
-    
-    def closeEvent(self, event):
-        """다이얼로그 닫을 때 컬럼 폭 저장"""
-        self.save_column_widths()
-        super().closeEvent(event)
-    
-    def accept(self):
-        """확인 버튼 클릭 시"""
-        self.save_column_widths()
-        super().accept()
-    
-    def reject(self):
-        """취소 버튼 클릭 시"""
-        self.save_column_widths()
-        super().reject()
+        
+        btn_layout.addStretch()
+        btn_layout.addWidget(btn_print)
+        btn_layout.addWidget(btn_close)
+        layout.addLayout(btn_layout)
     
     def save_column_widths(self):
-        """품목 테이블 컬럼 폭 저장"""
+        """테이블 컬럼 폭 저장"""
         if self.items_table:
-            widths = []
-            for i in range(self.items_table.columnCount()):
-                widths.append(self.items_table.columnWidth(i))
-            self.settings.setValue("tax_invoice_detail_dialog/items_col_widths", widths)
+            widths = [self.items_table.columnWidth(i) for i in range(self.items_table.columnCount())]
+            self.settings.setValue("tax_invoice_detail_dialog/items_widths", widths)
+        if hasattr(self, 'pay_table'):
+            widths = [self.pay_table.columnWidth(i) for i in range(self.pay_table.columnCount())]
+            self.settings.setValue("tax_invoice_detail_dialog/pay_widths", widths)
     
     def restore_column_widths(self):
-        """품목 테이블 컬럼 폭 복원"""
+        """테이블 컬럼 폭 복원"""
         if self.items_table:
-            val = self.settings.value("tax_invoice_detail_dialog/items_col_widths")
-            if val and isinstance(val, (list, tuple)):
-                for i in range(min(len(val), self.items_table.columnCount())):
-                    try:
-                        w = int(val[i])
-                        if w > 10:
-                            self.items_table.setColumnWidth(i, w)
-                    except:
-                        pass
+            val = self.settings.value("tax_invoice_detail_dialog/items_widths")
+            if val:
+                for i, w in enumerate(val):
+                    if i < self.items_table.columnCount(): self.items_table.setColumnWidth(i, int(w))
             else:
-                # 저장된 폭이 없으면 기본값으로 내용에 맞춤
                 self.items_table.resizeColumnsToContents()
+                
+        if hasattr(self, 'pay_table'):
+            val = self.settings.value("tax_invoice_detail_dialog/pay_widths")
+            if val:
+                for i, w in enumerate(val):
+                    if i < self.pay_table.columnCount(): self.pay_table.setColumnWidth(i, int(w))
+            else:
+                self.pay_table.resizeColumnsToContents()
+
+    def accept(self):
+        self.save_column_widths()
+        super().accept()
+
+    def reject(self):
+        self.save_column_widths()
+        super().reject()

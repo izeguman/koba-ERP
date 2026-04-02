@@ -7076,7 +7076,7 @@ def get_purchase_tax_invoices(supplier_id: int = None, purchase_id: int = None) 
     rows = query_all(sql, tuple(params))
     return [
         {
-            'id': r[0], 'issue_date': r[1], 'supplier_name': r[3], 'total_amount': r[4],
+            'id': r[0], 'issue_date': r[1], 'supplier_id': r[2], 'supplier_name': r[3], 'total_amount': r[4],
             'supply_amount': r[5], 'tax_amount': r[6],
             'approval_number': r[7], 'status': r[8], 'note': r[9], 'linked_pos': r[10],
             'paid_amount': r[11], 'balance': r[4] - r[11]
@@ -7105,10 +7105,10 @@ def add_purchase_payment(payment_data: dict) -> bool:
 
         # 1. 지불 내역 삽입
         cur.execute("""
-            INSERT INTO purchase_payments (tax_invoice_id, payment_date, amount, supply_amount, tax_amount, payment_method, note)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO purchase_payments (tax_invoice_id, payment_date, amount, supply_amount, tax_amount, payment_method, note, purchase_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (payment_data['tax_invoice_id'], payment_data['payment_date'], 
-              total, supply, tax, payment_data['payment_method'], payment_data.get('note')))
+              total, supply, tax, payment_data['payment_method'], payment_data.get('note'), payment_data.get('purchase_id')))
         
         # 2. 상태 업데이트
         _update_purchase_invoice_status(payment_data['tax_invoice_id'], cur)
@@ -7117,6 +7117,58 @@ def add_purchase_payment(payment_data: dict) -> bool:
         return True
     except Exception as e:
         print(f"add_purchase_payment error: {e}")
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+def get_purchase_payments(tax_invoice_id: int, purchase_id: int = None) -> list[dict]:
+    """특정 세금계산서(및 특정 발주)에 대한 지불 내역을 조회합니다."""
+    if purchase_id is None:
+        # 인보이스 상세 보기 등에서는 모든 지불 내역을 다 가져옴
+        sql = """
+            SELECT id, payment_date, amount, supply_amount, tax_amount, payment_method, note, purchase_id
+            FROM purchase_payments
+            WHERE tax_invoice_id = ?
+            ORDER BY payment_date DESC
+        """
+        rows = query_all(sql, (tax_invoice_id,))
+    else:
+        # 특정 발주 건에 대한 지불만 필터링
+        sql = """
+            SELECT id, payment_date, amount, supply_amount, tax_amount, payment_method, note, purchase_id
+            FROM purchase_payments
+            WHERE tax_invoice_id = ? AND (purchase_id = ? OR purchase_id IS NULL)
+            ORDER BY payment_date DESC
+        """
+        rows = query_all(sql, (tax_invoice_id, purchase_id))
+        
+    return [
+        {
+            'id': r[0], 'payment_date': r[1], 'amount': r[2],
+            'supply_amount': r[3], 'tax_amount': r[4],
+            'payment_method': r[5], 'note': r[6], 'purchase_id': r[7]
+        }
+        for r in rows
+    ]
+
+def delete_purchase_payment(payment_id: int) -> bool:
+    """지불 내역을 삭제하고 세금계산서 상태를 자동 갱신합니다."""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT tax_invoice_id FROM purchase_payments WHERE id = ?", (payment_id,))
+        row = cur.fetchone()
+        if not row:
+            return False
+        tax_invoice_id = row[0]
+        
+        cur.execute("DELETE FROM purchase_payments WHERE id = ?", (payment_id,))
+        _update_purchase_invoice_status(tax_invoice_id, cur)
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"delete_purchase_payment error: {e}")
         conn.rollback()
         return False
     finally:
@@ -7164,16 +7216,22 @@ def get_purchase_payment_status_for_po(purchase_id: int) -> dict:
     sql = """
         SELECT 
             COUNT(inv.id) as invoice_count,
-            SUM(inv.total_amount) as total_invoiced,
-            (SELECT SUM(pay.amount) 
-             FROM purchase_payments pay 
-             JOIN purchase_invoice_links l ON pay.tax_invoice_id = l.tax_invoice_id 
-             WHERE l.purchase_id = ?) as total_paid
+            SUM((
+                SELECT COALESCE(SUM(supply_amount + tax_amount), 0) 
+                FROM purchase_tax_invoice_items 
+                WHERE tax_invoice_id = inv.id AND purchase_id = ?
+            )) as total_invoiced,
+            SUM((
+                SELECT COALESCE(SUM(pay.amount), 0) 
+                FROM purchase_payments pay 
+                WHERE pay.tax_invoice_id = inv.id 
+                  AND (pay.purchase_id = ? OR pay.purchase_id IS NULL)
+            )) as total_paid
         FROM purchase_invoice_links link
         JOIN purchase_tax_invoices inv ON link.tax_invoice_id = inv.id
         WHERE link.purchase_id = ?
     """
-    row = query_one(sql, (purchase_id, purchase_id))
+    row = query_one(sql, (purchase_id, purchase_id, purchase_id))
     if not row or row[0] == 0:
         return {'invoice_count': 0, 'total_invoiced': 0, 'total_paid': 0, 'status': '미발행'}
     
@@ -7289,7 +7347,7 @@ def get_purchase_payment_summary(purchase_id):
     return get_purchase_payment_status_for_po(purchase_id)
 
 def get_tax_invoice_items(invoice_id):
-    """세금계산서의 상세 품목 리스트를 반환합니다."""
+    """세금계산서의 상세 품목 리스트를 반환합니다. (지불 상태 포함)"""
     sql = """
         SELECT id, item_name, spec, quantity, unit_price, supply_amount, tax_amount, purchase_id, purchase_no, note
         FROM purchase_tax_invoice_items
@@ -7297,14 +7355,24 @@ def get_tax_invoice_items(invoice_id):
         ORDER BY id
     """
     rows = query_all(sql, (invoice_id,))
-    return [
-        {
+    
+    items = []
+    for r in rows:
+        item = {
             'id': r[0], 'item_name': r[1], 'spec': r[2], 'quantity': r[3],
             'unit_price': r[4], 'supply_amount': r[5], 'tax_amount': r[6],
             'purchase_id': r[7], 'purchase_no': r[8], 'note': r[9]
         }
-        for r in rows
-    ]
+        # 각 품목별 PO의 지불 상태 계산 (PO가 있는 경우)
+        if item['purchase_id']:
+            from .db import get_purchase_payment_status_for_po # 순환 참조 방지
+            pay_info = get_purchase_payment_status_for_po(item['purchase_id'])
+            item['po_status'] = pay_info['status'] # '미지불', '부분지불', '지불완료'
+        else:
+            item['po_status'] = "-"
+            
+        items.append(item)
+    return items
 
 def add_tax_invoice_item(invoice_id, item_name, spec, quantity, unit_price, purchase_no=None, purchase_id=None, purchase_item_id=None, note=None):
     """세금계산서에 품목을 추가하고 헤더의 총액을 업데이트합니다."""
@@ -7398,7 +7466,8 @@ def get_tax_invoice_detail(invoice_id):
             'tax_amount': r[6],
             'approval_number': r[7], 
             'note': r[8],
-            'items': get_tax_invoice_items(r[0])
+            'items': get_tax_invoice_items(r[0]),
+            'payments': get_purchase_payments(r[0]) # 지불 내역 추가
         }
     return None
 
@@ -7408,7 +7477,8 @@ def get_all_tax_invoices(start_date=None, end_date=None):
         SELECT inv.id, inv.issue_date, s.biz_no, s.name, s.ceo_name, 
                inv.supply_amount, inv.tax_amount, inv.total_amount, 
                (SELECT COUNT(*) FROM purchase_tax_invoice_items WHERE tax_invoice_id = inv.id) as item_count,
-               inv.note
+               inv.note,
+               (SELECT COALESCE(SUM(amount), 0) FROM purchase_payments WHERE tax_invoice_id = inv.id) as paid_amount
         FROM purchase_tax_invoices inv
         JOIN suppliers s ON inv.supplier_id = s.id
     """

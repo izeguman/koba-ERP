@@ -268,7 +268,12 @@ class PurchaseWidget(QtWidgets.QWidget):
         row = self.table.currentRow()
         if row < 0: return
         
-        purchase_id = self.table.item(row, 1).data(QtCore.Qt.UserRole)
+        item = self.table.item(row, 0)
+        if not item: return
+        
+        purchase_id = item.data(QtCore.Qt.UserRole)
+        if not purchase_id: return
+        
         # 해당 PO와 연결된 세금계산서 목록 조회
         invoices = get_purchase_tax_invoices(purchase_id=purchase_id)
         
@@ -276,9 +281,8 @@ class PurchaseWidget(QtWidgets.QWidget):
             QtWidgets.QMessageBox.information(self, "알림", "연결된 세금계산서가 없습니다.\n먼저 '매입 세금계산서 등록'을 해주세요.")
             return
 
-        # 만약 여러 장의 세금계산서가 있다면 가장 최근 등록된 것을 기준으로 지불 팝업 실행
-        inv_data = invoices[0] 
-        dlg = PaymentEntryDialog(inv_data, self)
+        # 모든 세금계산서 목록을 전달하여 팝업 내에서 선택할 수 있도록 함
+        dlg = PaymentEntryDialog(invoices, target_purchase_id=purchase_id, parent=self)
         if dlg.exec_():
             self.load_purchase_list()
 
@@ -465,8 +469,6 @@ class PurchaseWidget(QtWidgets.QWidget):
                 # ✅ Col 7: 지불상태 (NEW)
                 pay_status = get_purchase_payment_status_for_po(purchase_id)
                 status_text = f"{pay_status['status']}"
-                if pay_status['invoice_count'] > 0:
-                    status_text += f" ({format_money(pay_status['total_paid'])}원)"
                 
                 item_7 = QtWidgets.QTableWidgetItem(status_text)
                 item_7.setTextAlignment(Qt.AlignCenter)
