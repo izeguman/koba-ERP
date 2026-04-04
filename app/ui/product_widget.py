@@ -458,11 +458,16 @@ class ProductWidget(QtWidgets.QWidget):
         self.btn_show_all_products.setChecked(self.show_all_products)   # ✅ 저장된 값으로 설정
         self.btn_show_all_products.toggled.connect(self.toggle_show_all)
 
+        self.btn_expand_all = QtWidgets.QPushButton("전체 펼치기")
+        self.btn_collapse_all = QtWidgets.QPushButton("전체 접기")
+
         self.btn_new_product.clicked.connect(self.add_product)
         self.btn_refresh_product.clicked.connect(self.load_product_list)
 
         title_layout.addWidget(title_label)
         title_layout.addStretch()
+        title_layout.addWidget(self.btn_expand_all)
+        title_layout.addWidget(self.btn_collapse_all)
         title_layout.addWidget(self.btn_new_product)
         title_layout.addWidget(self.btn_refresh_product)
         title_layout.addWidget(self.btn_show_all_products)  # ✅ 추가: 버튼 레이아웃에 추가
@@ -499,6 +504,9 @@ class ProductWidget(QtWidgets.QWidget):
 
         self.tree.itemExpanded.connect(self.on_item_expanded)
         self.tree.itemCollapsed.connect(self.on_item_collapsed)
+
+        self.btn_expand_all.clicked.connect(self.tree.expandAll)
+        self.btn_collapse_all.clicked.connect(self.tree.collapseAll)
 
         header = self.tree.header()
         # ✅ [추가] 시그널 연결 및 화살표 강제 표시
