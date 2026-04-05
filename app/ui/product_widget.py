@@ -554,12 +554,19 @@ class ProductWidget(QtWidgets.QWidget):
         self.search_sn_edit.setPlaceholderText("시리얼 번호 검색...")
         self.search_sn_edit.returnPressed.connect(self.load_product_list)
 
+        # 4. 주문번호 검색
+        self.search_order_edit = QLineEdit()
+        self.search_order_edit.setPlaceholderText("주문번호 검색...")
+        self.search_order_edit.returnPressed.connect(self.load_product_list)
+
         search_main_layout.addWidget(QtWidgets.QLabel("품명:"))
         search_main_layout.addWidget(self.search_name_edit, 2)
         search_main_layout.addWidget(QtWidgets.QLabel("품목코드:"))
         search_main_layout.addWidget(self.search_code_edit, 1)
         search_main_layout.addWidget(QtWidgets.QLabel("시리얼:"))
         search_main_layout.addWidget(self.search_sn_edit, 1)
+        search_main_layout.addWidget(QtWidgets.QLabel("주문번호:"))
+        search_main_layout.addWidget(self.search_order_edit, 1)
 
         self.btn_search = QtWidgets.QPushButton("검색")
         self.btn_search.clicked.connect(self.load_product_list)
@@ -594,6 +601,7 @@ class ProductWidget(QtWidgets.QWidget):
         self.search_name_edit.clear()
         self.search_code_edit.clear()
         self.search_sn_edit.clear()
+        self.search_order_edit.clear()
         self.load_product_list()
 
     def on_item_expanded(self, item):
@@ -922,6 +930,12 @@ class ProductWidget(QtWidgets.QWidget):
             if sn_query:
                 where_clauses.append("pr.serial_no LIKE ?")
                 params.append(f"%{sn_query}%")
+            
+            # 4. 주문번호 검색
+            order_query = self.search_order_edit.text().strip()
+            if order_query:
+                where_clauses.append("(SELECT order_no FROM orders WHERE id = pr.reserved_order_id) LIKE ?")
+                params.append(f"%{order_query}%")
                 
             if where_clauses:
                 sql += " WHERE " + " AND ".join(where_clauses)
@@ -1007,7 +1021,8 @@ class ProductWidget(QtWidgets.QWidget):
                 parent_item.setText(2, f"{serial_range} ({total_count}개)")
                 parent_item.setText(3, products[0][5] or "")
                 parent_item.setText(4, purchase_no)
-                parent_item.setText(5, delivery_status)
+                parent_item.setText(5, "") # 리콜상태는 그룹단위 요약에서 제외 (또는 필요시 구현)
+                parent_item.setText(6, delivery_status)
                 # Col 6(Order No) is specific to items, leave empty for group
                 parent_item.setText(7, products[0][1] or "") # Mfg Date
                 # Col 8, 9 (Dates) specific to items

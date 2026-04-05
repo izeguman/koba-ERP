@@ -510,7 +510,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self,
             "KOBATECH 생산 관리 시스템",
             "<h3>KOBATECH 생산 관리 시스템</h3>"
-            "<p>버전: 1.25.02</p>"
+            "<p>버전: 1.25.03</p>"
             "<p>제품 생산 및 재고 관리를 위한 통합 시스템</p>"
             "<br>"
             "<p><b>주요 기능:</b></p>"
@@ -1049,6 +1049,11 @@ class MainWindow(QtWidgets.QMainWindow):
         due_change_action = menu.addAction("납기 일정 관리")
         due_change_action.triggered.connect(self.change_due_date)
 
+        # ✅ [추가] 제품 생산 정보로 이동 (바로가기)
+        menu.addSeparator()
+        go_production_action = menu.addAction("➡️ 제품 생산 정보로 이동")
+        go_production_action.triggered.connect(self.go_to_product_production)
+
         menu.exec_(self.table.mapToGlobal(position))
 
     def add_order_with_autocomplete(self):
@@ -1156,6 +1161,29 @@ class MainWindow(QtWidgets.QMainWindow):
                 return row
 
         return None
+
+    def go_to_product_production(self):
+        """(새 함수) 선택된 주문의 제품 생산 정보 탭으로 이동"""
+        selected_row = self.table.currentRow()
+        if selected_row < 0:
+            return
+
+        # 1번 컬럼(주문번호)에서 텍스트 추출
+        order_no = self.table.item(selected_row, 1).text()
+        if not order_no or order_no == "-":
+             QtWidgets.QMessageBox.information(self, "알림", "주문번호가 없는 항목입니다.")
+             return
+
+        # 제품 생산 탭으로 전환
+        if hasattr(self, 'product_production_widget'):
+            # 탭 전환
+            self.main_tabs.setCurrentWidget(self.product_production_widget)
+            
+            # 검색창에 주문번호 입력 및 검색 실행
+            self.product_production_widget.search_order_edit.setText(order_no)
+            self.product_production_widget.load_product_list()
+            
+            self.statusBar().showMessage(f"주문번호 '{order_no}'에 대한 제품 생산 정보를 표시합니다.", 3000)
 
     def change_due_date(self):
         """새로운 '납기 일정 관리' 창을 여는 기능"""
